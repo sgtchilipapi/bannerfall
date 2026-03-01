@@ -1,0 +1,46 @@
+# Dependencies
+**/node_modules/
+
+# Build outputs
+backend/dist/
+frontend/.next/
+frontend/out/
+frontend/.turbo/
+contracts/artifacts/
+contracts/cache/
+contracts/types/
+
+# Coverage and test artifacts
+coverage/
+**/coverage/
+*.lcov
+
+# Runtime logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files (keep templates)
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# TypeScript incremental files
+*.tsbuildinfo
+
+# IDE/editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Local project notes
+MVP.md
