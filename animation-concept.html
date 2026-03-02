@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>5v5 Opposite Attack</title>
+<title>Two Click Targeting</title>
 
 <style>
 body {
@@ -11,7 +11,6 @@ body {
   background: #111;
 }
 
-/* 75% mobile-first arena */
 .battlefield {
   position: relative;
   width: 100vw;
@@ -20,10 +19,21 @@ body {
   border-bottom: 2px solid #444;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  padding: 6vh 4vw;
+  padding: 4vh 4vw;
   box-sizing: border-box;
-  overflow: hidden;
+}
+
+.top-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2vh;
+}
+
+.bottom-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2vh;
+  margin-top: auto;
 }
 
 .row {
@@ -38,14 +48,16 @@ body {
   position: relative;
   cursor: pointer;
   overflow: hidden;
+  transition: transform 150ms ease;
 }
 
-.top-row .monster {
-  background: #4aa3ff;
-}
+.top-row .monster { background: #4aa3ff; }
+.bottom-row .monster { background: #4caf50; }
 
-.bottom-row .monster {
-  background: #4caf50;
+/* Selected attacker highlight */
+.monster.selected {
+  outline: 3px solid yellow;
+  transform: scale(1.1);
 }
 
 /* Hit effects */
@@ -88,44 +100,171 @@ body {
   transform: translate(-50%, -50%) scale(1);
   pointer-events: none;
 }
+
+/* Forward hold animation */
+.monster.advance-top {
+  animation: advanceTop 3s forwards;
+}
+
+.monster.advance-bottom {
+  animation: advanceBottom 3s forwards;
+}
+
+@keyframes advanceTop {
+  0%   { transform: translateY(0); }
+
+  16.67%  { transform: translateY(4vh); }  /* move forward 500ms */
+
+  83.33%  { transform: translateY(4vh); }  /* hold 2s */
+
+  100% { transform: translateY(0); }       /* return 500ms */
+}
+
+@keyframes advanceBottom {
+  0%   { transform: translateY(0); }
+
+  16.67%  { transform: translateY(-4vh); }
+
+  83.33%  { transform: translateY(-4vh); }
+
+  100% { transform: translateY(0); }
+}
+
+.team-status {
+  text-align: center;
+  color: white;
+  font-size: 14px;
+  min-height: 20px;
+}
+
+.top-status {
+  margin-bottom: 10px;
+}
+
+.bottom-status {
+  margin-top: 10px;
+}
+
+.boss-row {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 2vh;
+  margin-top: 2vh;
+}
+
+.boss {
+  width: 20vw;
+  height: 20vw;
+  border-radius: 16px;
+  background: purple;
+  position: relative;
+  overflow: hidden;
+}
 </style>
 </head>
 
 <body>
 
 <div class="battlefield" id="battlefield">
-  <div class="row top-row" id="topRow"></div>
-  <div class="row bottom-row" id="bottomRow"></div>
+
+  <div class="top-section">
+    <div class="team-status top-status" id="topStatus"></div>
+    <div class="boss-row top-boss-row" id="topBossRow"></div>
+    <div class="row top-row" id="topRow"></div>
+  </div>
+
+  <div style="height: 8vh;"></div> <!-- battlefield gap -->
+
+  <div class="bottom-section">
+    <div class="row bottom-row" id="bottomRow"></div>
+    <div class="boss-row bottom-boss-row" id="bottomBossRow"></div>
+    <div class="team-status bottom-status" id="bottomStatus"></div>
+  </div>
+
 </div>
 
 <script>
 const battlefield = document.getElementById("battlefield");
 const topRow = document.getElementById("topRow");
 const bottomRow = document.getElementById("bottomRow");
+const topStatus = document.getElementById("topStatus");
+const bottomStatus = document.getElementById("bottomStatus");
 
 const COUNT = 5;
+let selectedAttacker = null;
 
-/* Create 5v5 */
+const topAdvanced = ["boss"];
+const bottomAdvanced = ["boss"];
+
+/* Create monsters */
 for (let i = 0; i < COUNT; i++) {
-  const topMonster = document.createElement("div");
-  topMonster.className = "monster";
-  topMonster.dataset.index = i;
+  const top = document.createElement("div");
+  top.className = "monster";
+  top.dataset.side = "top";
+  top.dataset.id = i;
 
-  const bottomMonster = document.createElement("div");
-  bottomMonster.className = "monster";
-  bottomMonster.dataset.index = i;
+  const bottom = document.createElement("div");
+  bottom.className = "monster";
+  bottom.dataset.side = "bottom";
+  bottom.dataset.id = i;
 
-  topRow.appendChild(topMonster);
-  bottomRow.appendChild(bottomMonster);
+  topRow.appendChild(top);
+  bottomRow.appendChild(bottom);
 
-  bottomMonster.addEventListener("click", () => {
-    attack(bottomMonster, topRow.children[i]);
-  });
-
-  topMonster.addEventListener("click", () => {
-    attack(topMonster, bottomRow.children[i]);
-  });
+  top.addEventListener("click", () => handleClick(top));
+  bottom.addEventListener("click", () => handleClick(bottom));
 }
+
+/* ---------- STATE RENDER ---------- */
+
+function renderAdvanced() {
+  topStatus.textContent =
+    "Advanced: [" +
+    topAdvanced.map(x => x === "boss" ? "B" : x).join(", ") +
+    "]";
+
+  bottomStatus.textContent =
+    "Advanced: [" +
+    bottomAdvanced.map(x => x === "boss" ? "B" : x).join(", ") +
+    "]";
+}
+
+/* ---------- CLICK LOGIC ---------- */
+
+function handleClick(monster) {
+if (!selectedAttacker) {
+  if (monster.dataset.type === "boss") return; // boss cannot attack
+  selectAttacker(monster);
+  return;
+}
+
+  if (monster === selectedAttacker) {
+    clearSelection();
+    return;
+  }
+
+  if (monster.dataset.side !== selectedAttacker.dataset.side) {
+    attack(selectedAttacker, monster);
+    clearSelection();
+  } else {
+    selectAttacker(monster);
+  }
+}
+
+function selectAttacker(monster) {
+  clearSelection();
+  selectedAttacker = monster;
+  monster.classList.add("selected");
+}
+
+function clearSelection() {
+  if (selectedAttacker) {
+    selectedAttacker.classList.remove("selected");
+  }
+  selectedAttacker = null;
+}
+
+/* ---------- UTILITIES ---------- */
 
 function centerOf(el) {
   const rect = el.getBoundingClientRect();
@@ -151,52 +290,140 @@ function createProjectile(x, y) {
   return p;
 }
 
+/* ---------- ATTACK ---------- */
+
 function attack(source, target) {
   const start = centerOf(source);
   const end = centerOf(target);
-
   const projectile = createProjectile(start.x, start.y);
 
-  /* Charge 300ms */
-  projectile.animate([
+  // Charge
+projectile.animate(
+  [
     { transform: "translate(-50%, -50%) scale(1)" },
-    { transform: "translate(-50%, -50%) scale(2.5)" }
-  ], {
-    duration: 300,
-    fill: "forwards",
-    easing: "ease-in-out"
-  });
+    { transform: "translate(-50%, -50%) scale(2.2)" }
+  ],
+  { duration: 150, fill: "forwards", easing: "ease-out" }
+);
 
-  /* Travel 700ms */
-  setTimeout(() => {
-    projectile.animate([
+// Travel
+setTimeout(() => {
+  projectile.animate(
+    [
       {
         left: start.x + "px",
         top: start.y + "px",
-        transform: "translate(-50%, -50%) scale(2.5)"
+        transform: "translate(-50%, -50%) scale(2.2)"
       },
       {
         left: end.x + "px",
         top: end.y + "px",
         transform: "translate(-50%, -50%) scale(1)"
       }
-    ], {
-      duration: 700,
-      fill: "forwards",
-      easing: "ease-out"
-    });
-  }, 300);
+    ],
+    { duration: 120, fill: "forwards", easing: "linear" }
+  );
+}, 150);
 
-  /* Impact */
-  setTimeout(() => {
-    triggerHit(target);
-  }, 1000);
+// Impact
+setTimeout(() => {
+  triggerHit(target);
+}, 270);
 
-  /* Cleanup */
-  setTimeout(() => {
-    projectile.remove();
-  }, 1200);
+// Cleanup
+setTimeout(() => {
+  projectile.remove();
+}, 350);
 }
+
+/* ---------- RANDOM ADVANCE ---------- */
+
+function randomAdvance() {
+  const allMonsters = Array.from(
+    document.querySelectorAll(".monster")
+  ).filter(m => m.dataset.type !== "boss");
+
+  if (!allMonsters.length) return;
+
+  const monster =
+    allMonsters[Math.floor(Math.random() * allMonsters.length)];
+
+  const side = monster.dataset.side;
+  const id = monster.dataset.id;
+
+  const advanceClass =
+    side === "top" ? "advance-top" : "advance-bottom";
+
+  if (monster.classList.contains(advanceClass)) return;
+
+  monster.classList.add(advanceClass);
+
+  // Determine own + enemy arrays
+  const ownArray = side === "top" ? topAdvanced : bottomAdvanced;
+  const enemyArray = side === "top" ? bottomAdvanced : topAdvanced;
+
+  const enemyRow = side === "top" ? bottomRow : topRow;
+
+  // Push into own advanced array
+  if (!ownArray.includes(id)) {
+    ownArray.push(id);
+  }
+
+  renderAdvanced();
+
+// 🔥 AUTO ATTACK LOGIC
+if (enemyArray.length > 0) {
+  const lastEnemyId = enemyArray[enemyArray.length - 1];
+
+  let target = null;
+
+  if (lastEnemyId === "boss") {
+    target = side === "top" ? bottomBoss : topBoss;
+  } else {
+    const targetIndex = parseInt(lastEnemyId, 10);
+    target = enemyRow.children[targetIndex];
+  }
+
+  if (target) {
+    attack(monster, target);
+  }
+}
+
+// Remove from frontline at end of hold (2.5s)
+setTimeout(() => {
+  const index = ownArray.indexOf(id);
+  if (index > 0) ownArray.splice(index, 1);
+
+  renderAdvanced();
+}, 2500);
+
+// Remove animation class when fully done (3s)
+setTimeout(() => {
+  monster.classList.remove(advanceClass);
+}, 3000);
+}
+
+setInterval(randomAdvance, 1000);
+
+const topBossRow = document.getElementById("topBossRow");
+const bottomBossRow = document.getElementById("bottomBossRow");
+
+/* Create Bosses */
+const topBoss = document.createElement("div");
+topBoss.className = "boss monster";
+topBoss.dataset.side = "top";
+topBoss.dataset.type = "boss";
+
+const bottomBoss = document.createElement("div");
+bottomBoss.className = "boss monster";
+bottomBoss.dataset.side = "bottom";
+bottomBoss.dataset.type = "boss";
+
+topBossRow.appendChild(topBoss);
+bottomBossRow.appendChild(bottomBoss);
+
+topBoss.addEventListener("click", () => handleClick(topBoss));
+bottomBoss.addEventListener("click", () => handleClick(bottomBoss));
 </script>
 
 </body>
