@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>5v5 Opposite Attack</title>
+
+<style>
+body {
+  margin: 0;
+  background: #111;
+}
+
+/* 75% mobile-first arena */
+.battlefield {
+  position: relative;
+  width: 100vw;
+  height: 75vh;
+  background: #1e1e1e;
+  border-bottom: 2px solid #444;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 6vh 4vw;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.row {
+  display: flex;
+  justify-content: space-between;
+}
+
+.monster {
+  width: 14vw;
+  height: 14vw;
+  border-radius: 10px;
+  position: relative;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.top-row .monster {
+  background: #4aa3ff;
+}
+
+.bottom-row .monster {
+  background: #4caf50;
+}
+
+/* Hit effects */
+.monster::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(255,0,0,0.6);
+  opacity: 0;
+}
+
+.monster.hit::after {
+  animation: flash 300ms ease-out forwards;
+}
+
+.monster.shake {
+  animation: shake 300ms ease-in-out;
+}
+
+@keyframes flash {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes shake {
+  0% { transform: translateX(0); }
+  25% { transform: translateX(-2vw); }
+  50% { transform: translateX(2vw); }
+  75% { transform: translateX(-1.5vw); }
+  100% { transform: translateX(0); }
+}
+
+/* Projectile */
+.projectile {
+  position: absolute;
+  width: 4vw;
+  height: 4vw;
+  background: red;
+  border-radius: 50%;
+  transform: translate(-50%, -50%) scale(1);
+  pointer-events: none;
+}
+</style>
+</head>
+
+<body>
+
+<div class="battlefield" id="battlefield">
+  <div class="row top-row" id="topRow"></div>
+  <div class="row bottom-row" id="bottomRow"></div>
+</div>
+
+<script>
+const battlefield = document.getElementById("battlefield");
+const topRow = document.getElementById("topRow");
+const bottomRow = document.getElementById("bottomRow");
+
+const COUNT = 5;
+
+/* Create 5v5 */
+for (let i = 0; i < COUNT; i++) {
+  const topMonster = document.createElement("div");
+  topMonster.className = "monster";
+  topMonster.dataset.index = i;
+
+  const bottomMonster = document.createElement("div");
+  bottomMonster.className = "monster";
+  bottomMonster.dataset.index = i;
+
+  topRow.appendChild(topMonster);
+  bottomRow.appendChild(bottomMonster);
+
+  bottomMonster.addEventListener("click", () => {
+    attack(bottomMonster, topRow.children[i]);
+  });
+
+  topMonster.addEventListener("click", () => {
+    attack(topMonster, bottomRow.children[i]);
+  });
+}
+
+function centerOf(el) {
+  const rect = el.getBoundingClientRect();
+  return {
+    x: rect.left + rect.width / 2,
+    y: rect.top + rect.height / 2
+  };
+}
+
+function triggerHit(target) {
+  target.classList.add("shake", "hit");
+  setTimeout(() => {
+    target.classList.remove("shake", "hit");
+  }, 300);
+}
+
+function createProjectile(x, y) {
+  const p = document.createElement("div");
+  p.className = "projectile";
+  p.style.left = x + "px";
+  p.style.top = y + "px";
+  battlefield.appendChild(p);
+  return p;
+}
+
+function attack(source, target) {
+  const start = centerOf(source);
+  const end = centerOf(target);
+
+  const projectile = createProjectile(start.x, start.y);
+
+  /* Charge 300ms */
+  projectile.animate([
+    { transform: "translate(-50%, -50%) scale(1)" },
+    { transform: "translate(-50%, -50%) scale(2.5)" }
+  ], {
+    duration: 300,
+    fill: "forwards",
+    easing: "ease-in-out"
+  });
+
+  /* Travel 700ms */
+  setTimeout(() => {
+    projectile.animate([
+      {
+        left: start.x + "px",
+        top: start.y + "px",
+        transform: "translate(-50%, -50%) scale(2.5)"
+      },
+      {
+        left: end.x + "px",
+        top: end.y + "px",
+        transform: "translate(-50%, -50%) scale(1)"
+      }
+    ], {
+      duration: 700,
+      fill: "forwards",
+      easing: "ease-out"
+    });
+  }, 300);
+
+  /* Impact */
+  setTimeout(() => {
+    triggerHit(target);
+  }, 1000);
+
+  /* Cleanup */
+  setTimeout(() => {
+    projectile.remove();
+  }, 1200);
+}
+</script>
+
+</body>
+</html>
