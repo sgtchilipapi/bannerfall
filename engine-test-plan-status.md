@@ -18,8 +18,8 @@ Source plan: `engine-test-plan.md`.
   Status: **Implemented** — covers combat-phase action gating, next-tick scheduling, cooldown enforcement, exposure-side effects, and faction-HP fallback when no targets are exposed.
 - [x] **`burst` suite**  
   Status: **Implemented** — covers delayed cancel timing, 70% lock threshold behavior, lock-time cancellation rejection, and next-tick execution/reset semantics.
-- [ ] **`damage routing` suite**  
-  Status: **Not implemented**.
+- [x] **`damage routing` suite**  
+  Status: **Implemented** — covers newest-exposed-first targeting, overflow into faction HP, and density-scaled damage totals.
 - [ ] **`xp/level` suite**  
   Status: **Not implemented**.
 - [ ] **`death/reset` suite**  
@@ -43,9 +43,9 @@ Source plan: `engine-test-plan.md`.
 
 Current implementation is **incomplete** relative to the test plan.
 
-- Implemented plan suites: **5 / 11** (`density`, `lobby`, `phase`, `manual attack`, `burst`).
+- Implemented plan suites: **6 / 11** (`density`, `lobby`, `phase`, `manual attack`, `burst`, `damage routing`).
 - Core blockers:
-  - Missing 7 planned suites.
+  - Missing 6 planned suites.
   - No server factory refactor for integration-test isolation.
   - Coverage command/target not configured.
   - Plan's Vitest tooling expectation not met.
