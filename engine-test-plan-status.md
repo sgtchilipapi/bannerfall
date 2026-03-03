@@ -12,8 +12,8 @@ Source plan: `engine-test-plan.md`.
   Status: **Implemented** — cap, monotonicity, and invalid-input coverage are present in `density.test.ts`.
 - [x] **`lobby` suite**  
   Status: **Implemented** — includes auto-balance, auto-start at max players, delayed leave/rejoin cooldown, and post-start join rejection.
-- [ ] **`phase` suite**  
-  Status: **Not implemented**.
+- [x] **`phase` suite**  
+  Status: **Implemented** — verifies prep/combat/transition timing, round increment, and round-limit end-state.
 - [ ] **`manual attack` suite**  
   Status: **Not implemented**.
 - [ ] **`burst` suite**  
@@ -43,7 +43,7 @@ Source plan: `engine-test-plan.md`.
 
 Current implementation is **incomplete** relative to the test plan.
 
-- Implemented plan suites: **2 / 11** (`density`, `lobby`).
+- Implemented plan suites: **3 / 11** (`density`, `lobby`, `phase`).
 - Core blockers:
   - Missing 9 planned suites.
   - No server factory refactor for integration-test isolation.
