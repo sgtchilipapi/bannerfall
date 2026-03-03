@@ -21,7 +21,7 @@ This checklist translates the recommended implementation path into practical, in
 
 ## Phase 2 — Frontend MVP Gameplay Shell (Thin, Functional UI)
 
-- [ ] Replace starter Next.js template page with MVP game screen.
+- [X] Replace starter Next.js template page with MVP game screen.
 - [ ] Add local identity bootstrap on first load:
   - [ ] generate UUID
   - [ ] generate random display name
