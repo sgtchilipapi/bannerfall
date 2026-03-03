@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   ATTACK_COOLDOWN_SECONDS,
+  MANUAL_EXPOSURE_BASE_SECONDS,
   MAX_PLAYERS,
   PREP_PHASE_SECONDS,
 } from "./constants.js";
@@ -40,12 +41,31 @@ test("WarEngine manual attack: action gated outside combat", () => {
   assert.equal(inPrep.error, "Manual attack is only available during combat.");
 });
 
-test("WarEngine manual attack: queues for next tick and applies exposure/cooldown", () => {
+test("WarEngine manual attack: resolves on next tick (not immediately)", () => {
   const engine = new WarEngine();
   fillLobbyAndStart(engine);
   advanceTicks(engine, PREP_PHASE_SECONDS);
 
-  const targetFactionHpBefore = engine.getSnapshotForPlayer("p1").factions[1].factionHp;
+  const factionHpBeforeQueue = engine.getSnapshotForPlayer(null).factions[1].factionHp;
+  const queueResult = engine.queueManualAttack("p1");
+  assert.equal(queueResult.ok, true);
+
+  const outcomeBeforeTick = engine.getOutcomeSummary();
+  assert.equal(outcomeBeforeTick.damageLog.length, 0);
+  assert.equal(engine.getSnapshotForPlayer(null).factions[1].factionHp, factionHpBeforeQueue);
+
+  engine.tick();
+
+  const outcomeAfterTick = engine.getOutcomeSummary();
+  assert.equal(outcomeAfterTick.damageLog.length, 1);
+  assert.equal(outcomeAfterTick.damageLog[0]?.kind, "manual");
+  assert.equal(outcomeAfterTick.damageLog[0]?.attackerId, "p1");
+});
+
+test("WarEngine manual attack: applies exposure and cooldown to attacker", () => {
+  const engine = new WarEngine();
+  fillLobbyAndStart(engine);
+  advanceTicks(engine, PREP_PHASE_SECONDS);
 
   const queued = engine.queueManualAttack("p1");
   assert.equal(queued.ok, true);
@@ -54,22 +74,9 @@ test("WarEngine manual attack: queues for next tick and applies exposure/cooldow
   assert.equal(attacker.isExposed, true);
   assert.equal(attacker.cooldownRemaining, ATTACK_COOLDOWN_SECONDS);
 
-  let outcome = engine.getOutcomeSummary();
-  assert.equal(outcome.damageLog.length, 0);
-
-  engine.tick();
-
-  outcome = engine.getOutcomeSummary();
-  assert.equal(outcome.damageLog.length, 1);
-  assert.equal(outcome.damageLog[0]?.kind, "manual");
-  assert.equal(outcome.damageLog[0]?.attackerId, "p1");
-
-  const postTickSnapshot = engine.getSnapshotForPlayer(null);
-  assert.ok(postTickSnapshot.factions[1].factionHp < targetFactionHpBefore);
-
+  advanceTicks(engine, MANUAL_EXPOSURE_BASE_SECONDS);
   attacker = getPlayer(engine, "p1");
-  assert.equal(attacker.cooldownRemaining, ATTACK_COOLDOWN_SECONDS - 1);
-  assert.ok(attacker.isExposed);
+  assert.equal(attacker.isExposed, false);
 });
 
 test("WarEngine manual attack: cooldown blocks repeated queue until timer expires", () => {
@@ -88,6 +95,28 @@ test("WarEngine manual attack: cooldown blocks repeated queue until timer expire
 
   const second = engine.queueManualAttack("p1");
   assert.equal(second.ok, true);
+});
+
+test("WarEngine manual attack: routes to faction HP when no exposed target exists", () => {
+  const engine = new WarEngine();
+  fillLobbyAndStart(engine);
+  advanceTicks(engine, PREP_PHASE_SECONDS);
+
+  const initialTargetFactionHp = engine.getSnapshotForPlayer(null).factions[1].factionHp;
+
+  const queued = engine.queueManualAttack("p1");
+  assert.equal(queued.ok, true);
+  engine.tick();
+
+  const outcome = engine.getOutcomeSummary();
+  const lastDamage = outcome.damageLog[outcome.damageLog.length - 1];
+  assert.ok(lastDamage);
+  assert.equal(lastDamage.kind, "manual");
+  assert.equal(lastDamage.damageToPlayers, 0);
+  assert.ok(lastDamage.damageToFaction > 0);
+
+  const postTickTargetFactionHp = engine.getSnapshotForPlayer(null).factions[1].factionHp;
+  assert.ok(postTickTargetFactionHp < initialTargetFactionHp);
 });
 
 test("WarEngine manual attack: burst-committed players cannot manual attack", () => {

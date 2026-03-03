@@ -15,7 +15,7 @@ Source plan: `engine-test-plan.md`.
 - [x] **`phase` suite**  
   Status: **Implemented** — verifies prep/combat/transition timing, round increment, and round-limit end-state.
 - [x] **`manual attack` suite**  
-  Status: **Implemented** — covers combat-phase action gating, next-tick scheduling, cooldown enforcement, and exposure-side effects.
+  Status: **Implemented** — covers combat-phase action gating, next-tick scheduling, cooldown enforcement, exposure-side effects, and faction-HP fallback when no targets are exposed.
 - [ ] **`burst` suite**  
   Status: **Not implemented**.
 - [ ] **`damage routing` suite**  
