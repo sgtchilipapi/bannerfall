@@ -20,8 +20,8 @@ Source plan: `engine-test-plan.md`.
   Status: **Implemented** — covers delayed cancel timing, 70% lock threshold behavior, lock-time cancellation rejection, and next-tick execution/reset semantics.
 - [x] **`damage routing` suite**  
   Status: **Implemented** — covers newest-exposed-first targeting, overflow into faction HP, and density-scaled damage totals.
-- [ ] **`xp/level` suite**  
-  Status: **Not implemented**.
+- [x] **`xp/level` suite**  
+  Status: **Implemented** — covers +5 manual-landed XP, +2 kill XP, threshold leveling, and attack-power scaling/level-cap behavior.
 - [ ] **`death/reset` suite**  
   Status: **Not implemented**.
 - [ ] **`win conditions` suite**  
@@ -43,9 +43,9 @@ Source plan: `engine-test-plan.md`.
 
 Current implementation is **incomplete** relative to the test plan.
 
-- Implemented plan suites: **6 / 11** (`density`, `lobby`, `phase`, `manual attack`, `burst`, `damage routing`).
+- Implemented plan suites: **7 / 11** (`density`, `lobby`, `phase`, `manual attack`, `burst`, `damage routing`, `xp/level`).
 - Core blockers:
-  - Missing 6 planned suites.
+  - Missing 4 planned suites.
   - No server factory refactor for integration-test isolation.
   - Coverage command/target not configured.
   - Plan's Vitest tooling expectation not met.
