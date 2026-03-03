@@ -1,3 +1,10 @@
+"use client";
+
+import { useState } from "react";
+
+const LOCAL_ID_KEY = "bannerfall.player.id";
+const LOCAL_NAME_KEY = "bannerfall.player.displayName";
+
 const match = {
   phase: "Combat",
   round: "1 / 5",
@@ -22,6 +29,7 @@ const player = {
 };
 
 export default function Home() {
+  const [identity] = useState<{ id: string; displayName: string } | null>(() => bootstrapIdentity());
   const timeRemainingPercent = Math.round((match.secondsRemaining / match.totalSeconds) * 100);
 
   return (
@@ -30,6 +38,9 @@ export default function Home() {
         <section className="rounded-xl border border-slate-800 bg-slate-900/80 p-4 shadow-lg shadow-black/20">
           <p className="text-xs uppercase tracking-widest text-slate-400">Bannerfall MVP</p>
           <h1 className="mt-1 text-2xl font-bold tracking-tight">Live Match</h1>
+          <p className="mt-2 text-sm text-slate-300">
+            {identity ? `${identity.displayName} • ${identity.id}` : "Generating identity..."}
+          </p>
 
           <div className="mt-4 grid grid-cols-2 gap-3">
             <Stat label="Phase" value={match.phase} />
@@ -62,7 +73,9 @@ export default function Home() {
             <li>HP: {player.hp}</li>
             <li>AP: {player.ap}</li>
             <li>Level: {player.level}</li>
-            <li>EXP: {player.xp}/{player.xpRequiredForNextLevel}</li>
+            <li>
+              EXP: {player.xp}/{player.xpRequiredForNextLevel}
+            </li>
             <li>Teammates Ready: {player.teammatesReady}</li>
           </ul>
 
@@ -78,6 +91,34 @@ export default function Home() {
       </main>
     </div>
   );
+}
+
+function bootstrapIdentity() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const existingId = localStorage.getItem(LOCAL_ID_KEY);
+  const existingDisplayName = localStorage.getItem(LOCAL_NAME_KEY);
+
+  const id = existingId ?? crypto.randomUUID();
+  const displayName = existingDisplayName ?? generateRandomDisplayName();
+
+  localStorage.setItem(LOCAL_ID_KEY, id);
+  localStorage.setItem(LOCAL_NAME_KEY, displayName);
+
+  return { id, displayName };
+}
+
+function generateRandomDisplayName() {
+  const adjectives = ["Swift", "Iron", "Silent", "Ember", "Noble", "Arcane"];
+  const nouns = ["Falcon", "Warden", "Ranger", "Vanguard", "Sentinel", "Drifter"];
+
+  const adjective = adjectives[Math.floor(Math.random() * adjectives.length)];
+  const noun = nouns[Math.floor(Math.random() * nouns.length)];
+  const suffix = Math.floor(100 + Math.random() * 900);
+
+  return `${adjective}${noun}${suffix}`;
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
