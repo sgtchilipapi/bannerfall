@@ -1,12 +1,13 @@
 **Backend Automated Test Plan (MVP-first)**
 
 1. **Test objective**
-- Lock down deterministic MVP gameplay behavior in [warEngine.ts](C:/Users/Paps/projects/bannerfall/backend/src/engine/warEngine.ts), websocket behavior in [server.ts](C:/Users/Paps/projects/bannerfall/backend/src/server.ts), and formula correctness in [density.ts](C:/Users/Paps/projects/bannerfall/backend/src/engine/density.ts).
+- Lock down deterministic MVP gameplay behavior in `backend/src/engine/warEngine.ts`, websocket behavior in `backend/src/server.ts`, and formula correctness in `backend/src/engine/density.ts`.
 
 2. **Tooling and setup**
-- Use `vitest` for TypeScript unit/integration tests.
-- Add scripts: `test`, `test:watch`, `test:coverage` in [backend/package.json](C:/Users/Paps/projects/bannerfall/backend/package.json).
-- Add test config and shared fixtures/helpers.
+- Current suite already runs with Node's built-in test runner (`node:test`) against compiled output.
+- Keep scripts in `backend/package.json`: `test`, `test:watch`, `test:coverage`.
+- `vitest` is optional, not required for the current unit tests to run.
+- If `vitest` is introduced later, existing tests would need migration from `node:test`/`node:assert` APIs to `vitest` globals (`test`, `expect`) or explicit compatibility imports.
 
 3. **Test suites (priority order)**
 1. `density` unit tests for cap, monotonicity, and edge inputs.
@@ -22,13 +23,13 @@
 11. `server protocol` integration tests for connect/join/state/action/ack/error and malformed message handling.
 
 4. **Required refactor for testability**
-- Move boot side effects out of [server.ts](C:/Users/Paps/projects/bannerfall/backend/src/server.ts) into a factory (example: `createServer()`), and keep `server.ts` as startup-only entrypoint. This enables clean integration tests without global port/timer conflicts.
+- Move boot side effects out of `backend/src/server.ts` into a factory (example: `createServer()`), and keep `server.ts` as startup-only entrypoint. This enables clean integration tests without global port/timer conflicts.
 
 5. **Deliverables**
 - Test files under `backend/src/**/*.test.ts`.
 - Reusable test helpers for creating players/matches and advancing ticks.
-- CI-ready command: `npm run test` and `npm run test:coverage`.
-- Coverage target for MVP lock-in: `>=80%` statements/functions on `engine/*`.
+- CI-ready command: `npm run test`.
+- Optional: wire real coverage reporting for `test:coverage` once a coverage tool is selected.
 
 6. **Definition of done**
 - All high-priority suites green locally.
