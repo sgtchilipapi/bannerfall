@@ -22,8 +22,8 @@ Source plan: `engine-test-plan.md`.
   Status: **Implemented** — covers newest-exposed-first targeting, overflow into faction HP, and density-scaled damage totals.
 - [x] **`xp/level` suite**  
   Status: **Implemented** — covers +5 manual-landed XP, +2 kill XP, threshold leveling, and attack-power scaling/level-cap behavior.
-- [ ] **`death/reset` suite**  
-  Status: **Not implemented**.
+- [x] **`death/reset` suite**  
+  Status: **Implemented** — covers death handling state transitions, dead-player action blocking, and per-round reset behavior that revives players while preserving level/faction HP.
 - [ ] **`win conditions` suite**  
   Status: **Not implemented**.
 - [ ] **`snapshot visibility` suite**  
@@ -43,7 +43,7 @@ Source plan: `engine-test-plan.md`.
 
 Current implementation is **incomplete** relative to the test plan.
 
-- Implemented plan suites: **7 / 11** (`density`, `lobby`, `phase`, `manual attack`, `burst`, `damage routing`, `xp/level`).
+- Implemented plan suites: **8 / 11** (`density`, `lobby`, `phase`, `manual attack`, `burst`, `damage routing`, `xp/level`, `death/reset`).
 - Core blockers:
   - Missing 4 planned suites.
   - No server factory refactor for integration-test isolation.
