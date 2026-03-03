@@ -38,7 +38,7 @@ This checklist translates the recommended implementation path into practical, in
   - [X] manual attack
   - [X] burst commit
   - [X] burst cancel
-- X] Add basic event/error feed on to the console log.
+- [X] Add basic event/error feed on to the console log.
 - [X] Add end-of-match summary view (winner + top-level stats).
 
 ## Phase 3 — Post-Match Persistence and Chain-Ready Interface
