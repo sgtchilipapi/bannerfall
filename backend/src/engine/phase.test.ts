@@ -33,16 +33,23 @@ test("WarEngine phase: starts in prep round 1 after auto-start", () => {
   assert.equal(snapshot.round, 1);
 });
 
-test("WarEngine phase: prep transitions to combat after prep timer expires", () => {
+test("WarEngine phase: prep only transitions on final prep tick and emits combat start event", () => {
   const engine = new WarEngine();
   fillLobbyAndStart(engine);
 
-  advanceTicks(engine, PREP_PHASE_SECONDS);
+  advanceTicks(engine, PREP_PHASE_SECONDS - 1);
 
-  const snapshot = engine.getSnapshotForPlayer(null);
+  let snapshot = engine.getSnapshotForPlayer(null);
+  assert.equal(snapshot.phase, "prep");
+  assert.equal(snapshot.phaseRemaining, 1);
+
+  advanceTicks(engine, 1);
+
+  snapshot = engine.getSnapshotForPlayer(null);
   assert.equal(snapshot.phase, "combat");
   assert.equal(snapshot.phaseRemaining, COMBAT_PHASE_SECONDS);
   assert.equal(snapshot.round, 1);
+  assert.ok(snapshot.events.some((event) => event.type === "combat_started"));
 });
 
 test("WarEngine phase: combat transitions to transition, then next prep with round increment", () => {
@@ -56,12 +63,19 @@ test("WarEngine phase: combat transitions to transition, then next prep with rou
   assert.equal(snapshot.phase, "transition");
   assert.equal(snapshot.phaseRemaining, TRANSITION_SECONDS);
   assert.equal(snapshot.round, 1);
+  assert.ok(snapshot.events.some((event) => event.type === "round_transition"));
 
-  advanceTicks(engine, TRANSITION_SECONDS);
+  advanceTicks(engine, TRANSITION_SECONDS - 1);
+  snapshot = engine.getSnapshotForPlayer(null);
+  assert.equal(snapshot.phase, "transition");
+  assert.equal(snapshot.phaseRemaining, 1);
+
+  advanceTicks(engine, 1);
   snapshot = engine.getSnapshotForPlayer(null);
   assert.equal(snapshot.phase, "prep");
   assert.equal(snapshot.phaseRemaining, PREP_PHASE_SECONDS);
   assert.equal(snapshot.round, 2);
+  assert.ok(snapshot.events.some((event) => event.type === "prep_started"));
 });
 
 test("WarEngine phase: ends at round limit after round 5 combat", () => {
@@ -82,4 +96,5 @@ test("WarEngine phase: ends at round limit after round 5 combat", () => {
   assert.equal(snapshot.phaseRemaining, 0);
   assert.equal(snapshot.round, TOTAL_ROUNDS);
   assert.equal(snapshot.winnerFactionId, null);
+  assert.ok(snapshot.events.some((event) => event.type === "match_ended"));
 });
