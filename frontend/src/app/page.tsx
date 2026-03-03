@@ -1,3 +1,7 @@
+"use client";
+
+import { useState } from "react";
+
 const match = {
   phase: "Combat",
   round: "1 / 5",
@@ -22,7 +26,19 @@ const player = {
 };
 
 export default function Home() {
+  const [isBurstCommitted, setIsBurstCommitted] = useState(false);
+  const burstCommitments = isBurstCommitted ? 1 : player.burstCommitments;
   const timeRemainingPercent = Math.round((match.secondsRemaining / match.totalSeconds) * 100);
+
+  const handleManualAttack = () => {
+    console.log("[action] manual_attack");
+  };
+
+  const handleBurstToggle = () => {
+    const nextState = !isBurstCommitted;
+    setIsBurstCommitted(nextState);
+    console.log(`[action] ${nextState ? "burst_commit" : "burst_cancel"}`);
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -67,11 +83,17 @@ export default function Home() {
           </ul>
 
           <div className="mt-4 grid gap-2">
-            <button className="rounded-md bg-emerald-500 px-3 py-2 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-400">
+            <button
+              onClick={handleManualAttack}
+              className="rounded-md bg-emerald-500 px-3 py-2 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-400"
+            >
               Attack
             </button>
-            <button className="rounded-md bg-amber-400 px-3 py-2 text-sm font-semibold text-amber-950 transition hover:bg-amber-300">
-              Burst Commit ({player.burstCommitments}/{player.burstRequired})
+            <button
+              onClick={handleBurstToggle}
+              className="rounded-md bg-amber-400 px-3 py-2 text-sm font-semibold text-amber-950 transition hover:bg-amber-300"
+            >
+              {isBurstCommitted ? "Burst Cancel" : "Burst Commit"} ({burstCommitments}/{player.burstRequired})
             </button>
           </div>
         </section>
