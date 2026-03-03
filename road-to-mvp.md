@@ -5,19 +5,19 @@ This checklist translates the recommended implementation path into practical, in
 ## Phase 1 — Backend Completion (Authoritative Tick Engine)
 
 - [X] Confirm all gameplay constants match MVP values (tick rate, rounds, HP/AP/XP, cooldowns, burst threshold, density params).
-- [ ] Add server protocol integration tests for:
-  - [ ] `connected` envelope on websocket open
-  - [ ] `join` success/failure paths
-  - [ ] `state` request/response
-  - [ ] action `ack` for valid actions
-  - [ ] `error` handling for invalid actions
-  - [ ] malformed JSON handling
+- [X] Add server protocol integration tests for:
+  - [X] `connected` envelope on websocket open
+  - [X] `join` success/failure paths
+  - [X] `state` request/response
+  - [X] action `ack` for valid actions
+  - [X] `error` handling for invalid actions
+  - [X] malformed JSON handling
 - [ ] Add reusable backend test helpers:
   - [ ] engine fixture setup
   - [ ] websocket client test harness
   - [ ] tick advancement utilities
 - [ ] Validate deterministic replay behavior (same scripted actions => same final snapshot/logs).
-- [ ] Ensure one-command backend validation stays green: `npm test`.
+- [X] Ensure one-command backend validation stays green: `npm test`.
 
 ## Phase 2 — Frontend MVP Gameplay Shell (Thin, Functional UI)
 
