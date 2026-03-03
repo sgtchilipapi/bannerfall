@@ -7,7 +7,7 @@
 export const TICK_SECONDS = 1;
 
 /** Maximum lobby size (7v7). */
-export const MAX_PLAYERS = 14;
+export const MAX_PLAYERS = 2;
 /** Two opposing factions. */
 export const FACTION_COUNT = 2;
 
