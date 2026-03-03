@@ -4,6 +4,7 @@ import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 const LOCAL_ID_KEY = "bannerfall.player.id";
 const LOCAL_NAME_KEY = "bannerfall.player.displayName";
+const LOCAL_JOIN_CODE_KEY = "bannerfall.lobby.joinCode";
 const MAX_FEED_ITEMS = 8;
 
 const fallbackMatch = {
@@ -59,8 +60,10 @@ type Snapshot = {
 
 type WsEnvelope =
   | { type: "connected"; tickSeconds: number }
+  | { type: "lobby_created"; lobbyId: string; joinCode: string }
+  | { type: "lobby_joined"; lobbyId: string; joinCode: string; playerId: string; factionId: number; name: string }
   | { type: "joined"; playerId: string; factionId: number; name: string }
-  | { type: "state"; snapshot: Snapshot }
+  | { type: "state"; lobbyId?: string; joinCode?: string; snapshot: Snapshot }
   | { type: "error"; message: string }
   | { type: string; [key: string]: unknown };
 
@@ -72,14 +75,17 @@ type ClientState = {
   snapshot: Snapshot | null;
   feed: FeedItem[];
   processedEventCount: number;
+  lobbyId: string | null;
+  joinCode: string | null;
 };
 
 type ClientAction =
   | { type: "socket_connecting" }
   | { type: "socket_connected"; tickSeconds: number }
   | { type: "socket_disconnected"; message: string }
-  | { type: "incoming_state"; snapshot: Snapshot }
+  | { type: "incoming_state"; lobbyId: string | null; joinCode: string | null; snapshot: Snapshot }
   | { type: "incoming_error"; message: string }
+  | { type: "lobby_context"; lobbyId: string; joinCode: string }
   | { type: "incoming_event"; event: EngineEvent };
 
 const initialClientState: ClientState = {
@@ -88,6 +94,8 @@ const initialClientState: ClientState = {
   snapshot: null,
   feed: [],
   processedEventCount: 0,
+  lobbyId: null,
+  joinCode: null,
 };
 
 function clientReducer(state: ClientState, action: ClientAction): ClientState {
@@ -107,6 +115,10 @@ function clientReducer(state: ClientState, action: ClientAction): ClientState {
     };
   }
 
+  if (action.type === "lobby_context") {
+    return { ...state, lobbyId: action.lobbyId, joinCode: action.joinCode };
+  }
+
   if (action.type === "incoming_state") {
     const newEvents = action.snapshot.events.slice(state.processedEventCount);
     const nextFeed = [...state.feed];
@@ -117,6 +129,8 @@ function clientReducer(state: ClientState, action: ClientAction): ClientState {
 
     return {
       ...state,
+      lobbyId: action.lobbyId ?? state.lobbyId,
+      joinCode: action.joinCode ?? state.joinCode,
       snapshot: action.snapshot,
       feed: nextFeed.slice(0, MAX_FEED_ITEMS),
       processedEventCount: action.snapshot.events.length,
@@ -141,6 +155,12 @@ function clientReducer(state: ClientState, action: ClientAction): ClientState {
 
 export default function Home() {
   const [identity] = useState<Identity | null>(() => bootstrapIdentity());
+  const [joinCodeInput, setJoinCodeInput] = useState(() => {
+    if (typeof window === "undefined") {
+      return "";
+    }
+    return localStorage.getItem(LOCAL_JOIN_CODE_KEY) ?? "";
+  });
   const [clientState, dispatch] = useReducer(clientReducer, initialClientState);
   const socketRef = useRef<WebSocket | null>(null);
 
@@ -164,12 +184,30 @@ export default function Home() {
 
       if (parsed.type === "connected") {
         dispatch({ type: "socket_connected", tickSeconds: parsed.tickSeconds });
-        socket.send(JSON.stringify({ type: "join", playerId: identity.id, name: identity.displayName }));
+        return;
+      }
+
+      if (parsed.type === "lobby_created") {
+        setJoinCodeInput(parsed.joinCode);
+        localStorage.setItem(LOCAL_JOIN_CODE_KEY, parsed.joinCode);
+        dispatch({ type: "lobby_context", lobbyId: parsed.lobbyId, joinCode: parsed.joinCode });
+        return;
+      }
+
+      if (parsed.type === "lobby_joined") {
+        setJoinCodeInput(parsed.joinCode);
+        localStorage.setItem(LOCAL_JOIN_CODE_KEY, parsed.joinCode);
+        dispatch({ type: "lobby_context", lobbyId: parsed.lobbyId, joinCode: parsed.joinCode });
         return;
       }
 
       if (parsed.type === "state") {
-        dispatch({ type: "incoming_state", snapshot: parsed.snapshot });
+        dispatch({
+          type: "incoming_state",
+          lobbyId: parsed.lobbyId ?? null,
+          joinCode: parsed.joinCode ?? null,
+          snapshot: parsed.snapshot,
+        });
         return;
       }
 
@@ -251,14 +289,37 @@ export default function Home() {
     return { committed, required };
   }, [clientState.snapshot]);
 
-  const sendAction = (type: "manual_attack" | "burst_commit" | "burst_cancel") => {
+  const sendPayload = (payload: Record<string, unknown>) => {
     const socket = socketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       dispatch({ type: "incoming_error", message: "Action failed: websocket is not connected." });
       return;
     }
 
-    socket.send(JSON.stringify({ type }));
+    socket.send(JSON.stringify(payload));
+  };
+
+  const sendAction = (type: "manual_attack" | "burst_commit" | "burst_cancel") => {
+    sendPayload({ type });
+  };
+
+  const createLobby = () => {
+    sendPayload({ type: "create_lobby" });
+  };
+
+  const joinLobby = () => {
+    const normalizedJoinCode = joinCodeInput.trim().toUpperCase();
+    if (!normalizedJoinCode) {
+      dispatch({ type: "incoming_error", message: "Join code is required." });
+      return;
+    }
+
+    localStorage.setItem(LOCAL_JOIN_CODE_KEY, normalizedJoinCode);
+    sendPayload({ type: "join_lobby", joinCode: normalizedJoinCode, playerId: identity?.id, name: identity?.displayName });
+  };
+
+  const joinLegacy = () => {
+    sendPayload({ type: "join", playerId: identity?.id, name: identity?.displayName });
   };
 
   const summary = useMemo(() => {
@@ -294,6 +355,45 @@ export default function Home() {
             {identity ? `${identity.displayName} • ${identity.id}` : "Generating identity..."}
           </p>
           <p className="mt-1 text-xs uppercase tracking-wide text-slate-400">Connection: {clientState.status}</p>
+          <p className="mt-1 text-xs uppercase tracking-wide text-slate-400">
+            Lobby: {clientState.lobbyId ? `${clientState.joinCode ?? "-"} (${clientState.lobbyId.slice(0, 8)}...)` : "Not joined"}
+          </p>
+
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={createLobby}
+              disabled={clientState.status !== "connected" || Boolean(selfPlayer)}
+              className="rounded-lg border border-emerald-500/50 bg-emerald-600/30 px-3 py-2 text-sm font-semibold transition hover:bg-emerald-500/40 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Create Lobby
+            </button>
+            <button
+              type="button"
+              onClick={joinLegacy}
+              disabled={clientState.status !== "connected" || Boolean(selfPlayer)}
+              className="rounded-lg border border-slate-500/50 bg-slate-600/30 px-3 py-2 text-sm font-semibold transition hover:bg-slate-500/40 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Join Legacy
+            </button>
+          </div>
+
+          <div className="mt-2 flex gap-2">
+            <input
+              value={joinCodeInput}
+              onChange={(event) => setJoinCodeInput(event.target.value.toUpperCase())}
+              placeholder="Join code"
+              className="w-full rounded-lg border border-slate-700 bg-slate-950/50 px-3 py-2 text-sm outline-none ring-sky-500 focus:ring"
+            />
+            <button
+              type="button"
+              onClick={joinLobby}
+              disabled={clientState.status !== "connected" || Boolean(selfPlayer)}
+              className="rounded-lg border border-sky-500/50 bg-sky-600/30 px-3 py-2 text-sm font-semibold transition hover:bg-sky-500/40 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Join
+            </button>
+          </div>
 
           <div className="mt-4 grid grid-cols-2 gap-3">
             <Stat label="Phase" value={match.phase} />
@@ -334,7 +434,7 @@ export default function Home() {
               />
             </div>
           ) : (
-            <p className="mt-3 text-sm text-slate-300">Join the match to view your player stats.</p>
+            <p className="mt-3 text-sm text-slate-300">Join a lobby to view your player stats.</p>
           )}
 
           <div className="mt-4 grid grid-cols-2 gap-3">
