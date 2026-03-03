@@ -30,8 +30,8 @@ Source plan: `engine-test-plan.md`.
   Status: **Implemented** — covers death handling state transitions, dead-player action blocking, and per-round reset behavior that revives players while preserving level/faction HP.
 - [ ] **`server protocol` integration suite**  
   Status: **Not implemented**.
-- [ ] **Server refactor for testability (`createServer()` / startup separation)**  
-  Status: **Not implemented** — `server.ts` currently instantiates `WarEngine`, `WebSocketServer`, and `setInterval` at module scope.
+- [x] **Server refactor for testability (`createServer()` / startup separation)**  
+  Status: **Implemented** — websocket/engine/tick-loop wiring moved to `backend/src/createServer.ts`; `backend/src/server.ts` is now startup-only.
 - [ ] **Deliverables: reusable test helpers**  
   Status: **Not implemented**.
 - [ ] **Deliverables: CI-ready coverage target (`>=80%` on `engine/*`)**  
@@ -45,8 +45,7 @@ Current implementation is **incomplete** relative to the test plan.
 
 - Implemented plan suites: **10 / 11** (`density`, `lobby`, `phase`, `manual attack`, `burst`, `damage routing`, `xp/level`, `snapshot visibility`, `win conditions`, `death/reset`).
 - Core blockers:
-  - Missing 4 planned suites.
-  - No server factory refactor for integration-test isolation.
+  - Missing 3 planned deliverables/suites (`server protocol`, reusable helpers, coverage target).
   - Coverage command/target not configured.
   - Plan's Vitest tooling expectation not met.
 
