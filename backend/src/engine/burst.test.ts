@@ -1,27 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-  BURST_CANCEL_SECONDS,
-  BURST_LOCK_RATIO,
-  MAX_PLAYERS,
-  PREP_PHASE_SECONDS,
-} from "./constants.js";
-import { WarEngine } from "./warEngine.js";
+import { BURST_CANCEL_SECONDS, BURST_LOCK_RATIO } from "./constants.js";
+import { createEngineFixture, getPlayerFromSnapshot } from "../test-utils/engineFixture.js";
 
-function fillLobbyAndStart(engine: WarEngine): void {
-  for (let index = 1; index <= MAX_PLAYERS; index += 1) {
-    const result = engine.addPlayer(`p${index}`, `p${index}`);
-    assert.equal(result.ok, true);
-  }
-}
-
-function advanceTicks(engine: WarEngine, ticks: number): void {
-  for (let index = 0; index < ticks; index += 1) {
-    engine.tick();
-  }
-}
-
-function getFactionPlayerIds(engine: WarEngine, factionId: 0 | 1): string[] {
+function getFactionPlayerIds(engine: ReturnType<typeof createEngineFixture>, factionId: 0 | 1): string[] {
   const snapshot = engine.getSnapshotForPlayer(null);
   return snapshot.players
     .filter((player) => player.factionId === factionId)
@@ -29,17 +11,8 @@ function getFactionPlayerIds(engine: WarEngine, factionId: 0 | 1): string[] {
     .sort();
 }
 
-function getPlayer(engine: WarEngine, viewerId: string, targetId: string) {
-  const snapshot = engine.getSnapshotForPlayer(viewerId);
-  const player = snapshot.players.find((entry) => entry.id === targetId);
-  assert.ok(player);
-  return player;
-}
-
 test("WarEngine burst: cancel request finalizes only after 3-tick delay", () => {
-  const engine = new WarEngine();
-  fillLobbyAndStart(engine);
-  advanceTicks(engine, PREP_PHASE_SECONDS);
+  const engine = createEngineFixture();
 
   const [playerId] = getFactionPlayerIds(engine, 0);
   assert.ok(playerId);
@@ -51,19 +24,19 @@ test("WarEngine burst: cancel request finalizes only after 3-tick delay", () => 
   const cancelRequested = engine.setBurstCommit(playerId, false);
   assert.equal(cancelRequested.ok, true);
 
-  advanceTicks(engine, BURST_CANCEL_SECONDS - 1);
-  let player = getPlayer(engine, viewerId, playerId);
+  for (let index = 0; index < BURST_CANCEL_SECONDS - 1; index += 1) {
+    engine.tick();
+  }
+  let player = getPlayerFromSnapshot(engine, viewerId, playerId);
   assert.equal(player.isCommittedToBurst, true);
 
-  advanceTicks(engine, 1);
-  player = getPlayer(engine, viewerId, playerId);
+  engine.tick();
+  player = getPlayerFromSnapshot(engine, viewerId, playerId);
   assert.equal(player.isCommittedToBurst, false);
 });
 
 test("WarEngine burst: locks only when committed alive ratio reaches at least 70%", () => {
-  const engine = new WarEngine();
-  fillLobbyAndStart(engine);
-  advanceTicks(engine, PREP_PHASE_SECONDS);
+  const engine = createEngineFixture();
 
   const factionZero = getFactionPlayerIds(engine, 0);
   assert.equal(factionZero.length, 7);
@@ -91,9 +64,7 @@ test("WarEngine burst: locks only when committed alive ratio reaches at least 70
 });
 
 test("WarEngine burst: cancellation is rejected once burst is locked", () => {
-  const engine = new WarEngine();
-  fillLobbyAndStart(engine);
-  advanceTicks(engine, PREP_PHASE_SECONDS);
+  const engine = createEngineFixture();
 
   const factionZero = getFactionPlayerIds(engine, 0);
   for (const id of factionZero.slice(0, 5)) {
@@ -108,9 +79,7 @@ test("WarEngine burst: cancellation is rejected once burst is locked", () => {
 });
 
 test("WarEngine burst: executes on the tick after lock and clears burst state", () => {
-  const engine = new WarEngine();
-  fillLobbyAndStart(engine);
-  advanceTicks(engine, PREP_PHASE_SECONDS);
+  const engine = createEngineFixture();
 
   const factionZero = getFactionPlayerIds(engine, 0);
   for (const id of factionZero.slice(0, 5)) {
@@ -144,7 +113,7 @@ test("WarEngine burst: executes on the tick after lock and clears burst state", 
   assert.equal(postExecutionSnapshot.factions[0].burstCommitCount, 0);
 
   for (const id of factionZero.slice(0, 5)) {
-    const player = getPlayer(engine, viewerId, id);
+    const player = getPlayerFromSnapshot(engine, viewerId, id);
     assert.equal(player.isCommittedToBurst, false);
   }
 });
