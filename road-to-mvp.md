@@ -40,7 +40,7 @@ This checklist translates the recommended implementation path into practical, in
   - [ ] burst commit
   - [ ] burst cancel
 - [ ] Add basic event/error feed.
-- [ ] Add end-of-match summary view (winner + top-level stats).
+- [X] Add end-of-match summary view (winner + top-level stats).
 
 ## Phase 3 — Post-Match Persistence and Chain-Ready Interface
 
