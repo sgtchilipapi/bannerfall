@@ -14,8 +14,8 @@ Source plan: `engine-test-plan.md`.
   Status: **Implemented** — includes auto-balance, auto-start at max players, delayed leave/rejoin cooldown, and post-start join rejection.
 - [x] **`phase` suite**  
   Status: **Implemented** — verifies prep/combat/transition timing, round increment, and round-limit end-state.
-- [ ] **`manual attack` suite**  
-  Status: **Not implemented**.
+- [x] **`manual attack` suite**  
+  Status: **Implemented** — covers combat-phase action gating, next-tick scheduling, cooldown enforcement, exposure-side effects, and faction-HP fallback when no targets are exposed.
 - [ ] **`burst` suite**  
   Status: **Not implemented**.
 - [ ] **`damage routing` suite**  
@@ -43,9 +43,9 @@ Source plan: `engine-test-plan.md`.
 
 Current implementation is **incomplete** relative to the test plan.
 
-- Implemented plan suites: **3 / 11** (`density`, `lobby`, `phase`).
+- Implemented plan suites: **4 / 11** (`density`, `lobby`, `phase`, `manual attack`).
 - Core blockers:
-  - Missing 9 planned suites.
+  - Missing 7 planned suites.
   - No server factory refactor for integration-test isolation.
   - Coverage command/target not configured.
   - Plan's Vitest tooling expectation not met.
