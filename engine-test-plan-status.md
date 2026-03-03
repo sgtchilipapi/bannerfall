@@ -28,8 +28,8 @@ Source plan: `engine-test-plan.md`.
   Status: **Implemented** — covers immediate faction-HP depletion, round-limit higher-HP winner selection, and round-limit tie handling in `backend/src/engine/win-conditions.test.ts`.
 - [x] **`death/reset` suite**  
   Status: **Implemented** — covers death handling state transitions, dead-player action blocking, and per-round reset behavior that revives players while preserving level/faction HP.
-- [ ] **`server protocol` integration suite**  
-  Status: **Not implemented**.
+- [x] **`server protocol` integration suite**  
+  Status: **Implemented** — added websocket integration coverage for connect/join/state/action ack/error flows plus malformed-message handling in `backend/src/server-protocol.test.ts`.
 - [x] **Server refactor for testability (`createServer()` / startup separation)**  
   Status: **Implemented** — websocket/engine/tick-loop wiring moved to `backend/src/createServer.ts`; `backend/src/server.ts` is now startup-only.
 - [ ] **Deliverables: reusable test helpers**  
@@ -43,9 +43,9 @@ Source plan: `engine-test-plan.md`.
 
 Current implementation is **incomplete** relative to the test plan.
 
-- Implemented plan suites: **10 / 11** (`density`, `lobby`, `phase`, `manual attack`, `burst`, `damage routing`, `xp/level`, `snapshot visibility`, `win conditions`, `death/reset`).
+- Implemented plan suites: **11 / 11** (`density`, `lobby`, `phase`, `manual attack`, `burst`, `damage routing`, `xp/level`, `snapshot visibility`, `win conditions`, `death/reset`, `server protocol`).
 - Core blockers:
-  - Missing 3 planned deliverables/suites (`server protocol`, reusable helpers, coverage target).
+  - Missing 2 planned deliverables (`reusable helpers`, `coverage target`).
   - Coverage command/target not configured.
   - Plan's Vitest tooling expectation not met.
 
