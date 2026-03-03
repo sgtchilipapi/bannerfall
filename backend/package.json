@@ -4,10 +4,12 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm run build && node --test dist/**/*.test.js",
     "build": "tsc",
     "start": "node dist/server.js",
-    "dev": "tsc && node dist/server.js"
+    "dev": "tsc && node dist/server.js",
+    "test:watch": "node --test --watch dist/**/*.test.js",
+    "test:coverage": "echo \"Coverage not yet configured in this environment\" && exit 1"
   },
   "keywords": [],
   "author": "",
