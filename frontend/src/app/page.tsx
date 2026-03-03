@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useReducer, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 
 const LOCAL_ID_KEY = "bannerfall.player.id";
 const LOCAL_NAME_KEY = "bannerfall.player.displayName";
@@ -39,11 +39,18 @@ type Snapshot = {
   round: number;
   totalRounds: number;
   winnerFactionId: number | null;
-  factions: { id: number; factionHp: number }[];
+  selfPlayerId: string | null;
+  selfFactionId: number | null;
+  factions: { id: number; factionHp: number; aliveCount: number; burstCommitCount: number | null }[];
   players: {
     id: string;
+    name: string;
     factionId: number;
+    level: number;
+    xp: number;
+    attackPower: number;
     isAlive: boolean;
+    isCommittedToBurst: boolean | null;
     kills: number;
     damageDealt: number;
   }[];
@@ -135,6 +142,7 @@ function clientReducer(state: ClientState, action: ClientAction): ClientState {
 export default function Home() {
   const [identity] = useState<Identity | null>(() => bootstrapIdentity());
   const [clientState, dispatch] = useReducer(clientReducer, initialClientState);
+  const socketRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
     if (!identity) {
@@ -145,6 +153,7 @@ export default function Home() {
 
     const wsUrl = process.env.NEXT_PUBLIC_WS_URL ?? "ws://127.0.0.1:8080";
     const socket = new WebSocket(wsUrl);
+    socketRef.current = socket;
 
     socket.addEventListener("message", (raw) => {
       const parsed = parseEnvelope(raw.data);
@@ -178,6 +187,7 @@ export default function Home() {
     });
 
     return () => {
+      socketRef.current = null;
       socket.close();
     };
   }, [identity]);
@@ -215,6 +225,41 @@ export default function Home() {
   }, [clientState.snapshot]);
 
   const timeRemainingPercent = Math.min(100, Math.max(0, Math.round((match.secondsRemaining / match.totalSeconds) * 100)));
+
+  const selfPlayer = useMemo(() => {
+    if (!clientState.snapshot?.selfPlayerId) {
+      return null;
+    }
+
+    return clientState.snapshot.players.find((player) => player.id === clientState.snapshot?.selfPlayerId) ?? null;
+  }, [clientState.snapshot]);
+
+  const readyCounts = useMemo(() => {
+    if (clientState.snapshot?.selfFactionId === null || clientState.snapshot?.selfFactionId === undefined) {
+      return null;
+    }
+
+    const myFaction = clientState.snapshot.factions.find((faction) => faction.id === clientState.snapshot?.selfFactionId);
+    if (!myFaction) {
+      return null;
+    }
+
+    const aliveCount = Math.max(myFaction.aliveCount, 1);
+    const required = Math.max(1, Math.ceil(aliveCount * 0.7));
+    const committed = myFaction.burstCommitCount ?? 0;
+
+    return { committed, required };
+  }, [clientState.snapshot]);
+
+  const sendAction = (type: "manual_attack" | "burst_commit" | "burst_cancel") => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      dispatch({ type: "incoming_error", message: "Action failed: websocket is not connected." });
+      return;
+    }
+
+    socket.send(JSON.stringify({ type }));
+  };
 
   const summary = useMemo(() => {
     if (!clientState.snapshot?.ended) {
@@ -272,6 +317,45 @@ export default function Home() {
             {factionHealth.map((faction) => (
               <Bar key={faction.label} label={faction.label} value={faction.value} color={faction.color} />
             ))}
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+          <h2 className="text-lg font-semibold">Player Panel</h2>
+          {selfPlayer ? (
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <Stat label="Player" value={selfPlayer.name} />
+              <Stat label="Level" value={String(selfPlayer.level)} />
+              <Stat label="ATK" value={String(selfPlayer.attackPower)} />
+              <Stat label="EXP" value={String(selfPlayer.xp)} />
+              <Stat
+                label="Teammates Ready"
+                value={readyCounts ? `${readyCounts.committed} / ${readyCounts.required}` : "-"}
+              />
+            </div>
+          ) : (
+            <p className="mt-3 text-sm text-slate-300">Join the match to view your player stats.</p>
+          )}
+
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => sendAction("manual_attack")}
+              disabled={!selfPlayer || clientState.status !== "connected"}
+              className="rounded-lg border border-rose-500/50 bg-rose-600/30 px-3 py-2 text-sm font-semibold transition hover:bg-rose-500/40 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Attack
+            </button>
+            <button
+              type="button"
+              onClick={() => sendAction(selfPlayer?.isCommittedToBurst ? "burst_cancel" : "burst_commit")}
+              disabled={!selfPlayer || clientState.status !== "connected"}
+              className="rounded-lg border border-indigo-500/50 bg-indigo-600/30 px-3 py-2 text-sm font-semibold transition hover:bg-indigo-500/40 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {selfPlayer?.isCommittedToBurst
+                ? "Cancel"
+                : `Burst ${readyCounts?.committed ?? 0}/${readyCounts?.required ?? "-"}`}
+            </button>
           </div>
         </section>
 

@@ -159,6 +159,7 @@ export interface PublicPlayerView {
   name: string;
   factionId: FactionId;
   level: number;
+  xp: number;
   hp: number;
   isAlive: boolean;
   isExposed: boolean;
