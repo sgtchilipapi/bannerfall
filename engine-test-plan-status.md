@@ -26,8 +26,8 @@ Source plan: `engine-test-plan.md`.
   Status: **Not implemented**.
 - [ ] **`win conditions` suite**  
   Status: **Not implemented**.
-- [ ] **`snapshot visibility` suite**  
-  Status: **Not implemented**.
+- [x] **`snapshot visibility` suite**  
+  Status: **Implemented** — verifies burst commit visibility is restricted to teammates and redacted for opponents/spectators.
 - [ ] **`server protocol` integration suite**  
   Status: **Not implemented**.
 - [ ] **Server refactor for testability (`createServer()` / startup separation)**  
@@ -43,7 +43,7 @@ Source plan: `engine-test-plan.md`.
 
 Current implementation is **incomplete** relative to the test plan.
 
-- Implemented plan suites: **7 / 11** (`density`, `lobby`, `phase`, `manual attack`, `burst`, `damage routing`, `xp/level`).
+- Implemented plan suites: **8 / 11** (`density`, `lobby`, `phase`, `manual attack`, `burst`, `damage routing`, `xp/level`, `snapshot visibility`).
 - Core blockers:
   - Missing 4 planned suites.
   - No server factory refactor for integration-test isolation.
