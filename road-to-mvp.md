@@ -26,10 +26,10 @@ This checklist translates the recommended implementation path into practical, in
   - [X] generate UUID
   - [X] generate random display name
   - [X] store both in `localStorage`
-- [ ] Implement websocket client lifecycle:
-  - [ ] connect/disconnect handling
-  - [ ] auto-join payload using local identity
-  - [ ] incoming message reducer for state/events/errors
+- [X] Implement websocket client lifecycle:
+  - [X] connect/disconnect handling
+  - [X] auto-join payload using local identity
+  - [X] incoming message reducer for state/events/errors
 - [ ] Build minimal playable HUD:
   - [ ] phase, round, timer
   - [ ] faction HP bars/values
