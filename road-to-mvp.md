@@ -16,7 +16,7 @@ This checklist translates the recommended implementation path into practical, in
   - [X] engine fixture setup
   - [X] websocket client test harness
   - [X] tick advancement utilities
-- [ ] Validate deterministic replay behavior (same scripted actions => same final snapshot/logs).
+- [X] Validate deterministic replay behavior (same scripted actions => same final snapshot/logs).
 - [X] Ensure one-command backend validation stays green: `npm test`.
 
 ## Phase 2 — Frontend MVP Gameplay Shell (Thin, Functional UI)
