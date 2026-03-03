@@ -1,48 +1,211 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useReducer, useState } from "react";
 
 const LOCAL_ID_KEY = "bannerfall.player.id";
 const LOCAL_NAME_KEY = "bannerfall.player.displayName";
+const MAX_FEED_ITEMS = 8;
 
-const match = {
-  phase: "Combat",
-  round: "1 / 5",
-  secondsRemaining: 9,
+const fallbackMatch = {
+  phase: "waiting",
+  round: 1,
+  totalRounds: 5,
+  secondsRemaining: 0,
   totalSeconds: 15,
 };
 
-const factionHealth = [
-  { label: "Red Faction", value: 72, color: "bg-rose-500" },
-  { label: "Blue Faction", value: 61, color: "bg-sky-500" },
-];
-
-const player = {
-  hp: 100,
-  ap: 2,
-  level: 2,
-  xp: 24,
-  xpRequiredForNextLevel: 40,
-  teammatesReady: 2,
-  burstCommitments: 0,
-  burstRequired: 3,
+type Identity = {
+  id: string;
+  displayName: string;
 };
 
+type FeedItem = {
+  kind: "event" | "error";
+  message: string;
+  tick?: number;
+};
+
+type EngineEvent = {
+  tick: number;
+  type: string;
+  message: string;
+};
+
+type Snapshot = {
+  tick: number;
+  phase: string;
+  phaseRemaining: number;
+  round: number;
+  totalRounds: number;
+  factions: { id: number; factionHp: number }[];
+  events: EngineEvent[];
+};
+
+type WsEnvelope =
+  | { type: "connected"; tickSeconds: number }
+  | { type: "joined"; playerId: string; factionId: number; name: string }
+  | { type: "state"; snapshot: Snapshot }
+  | { type: "error"; message: string }
+  | { type: string; [key: string]: unknown };
+
+type ConnectionStatus = "connecting" | "connected" | "disconnected";
+
+type ClientState = {
+  status: ConnectionStatus;
+  tickSeconds: number;
+  snapshot: Snapshot | null;
+  feed: FeedItem[];
+  processedEventCount: number;
+};
+
+type ClientAction =
+  | { type: "socket_connecting" }
+  | { type: "socket_connected"; tickSeconds: number }
+  | { type: "socket_disconnected"; message: string }
+  | { type: "incoming_state"; snapshot: Snapshot }
+  | { type: "incoming_error"; message: string }
+  | { type: "incoming_event"; event: EngineEvent };
+
+const initialClientState: ClientState = {
+  status: "connecting",
+  tickSeconds: 1,
+  snapshot: null,
+  feed: [],
+  processedEventCount: 0,
+};
+
+function clientReducer(state: ClientState, action: ClientAction): ClientState {
+  if (action.type === "socket_connecting") {
+    return { ...state, status: "connecting" };
+  }
+
+  if (action.type === "socket_connected") {
+    return { ...state, status: "connected", tickSeconds: action.tickSeconds };
+  }
+
+  if (action.type === "socket_disconnected") {
+    return {
+      ...state,
+      status: "disconnected",
+      feed: [{ kind: "error", message: action.message }, ...state.feed].slice(0, MAX_FEED_ITEMS),
+    };
+  }
+
+  if (action.type === "incoming_state") {
+    const newEvents = action.snapshot.events.slice(state.processedEventCount);
+    const nextFeed = [...state.feed];
+
+    for (const event of newEvents) {
+      nextFeed.unshift({ kind: "event", message: event.message, tick: event.tick });
+    }
+
+    return {
+      ...state,
+      snapshot: action.snapshot,
+      feed: nextFeed.slice(0, MAX_FEED_ITEMS),
+      processedEventCount: action.snapshot.events.length,
+    };
+  }
+
+  if (action.type === "incoming_error") {
+    return {
+      ...state,
+      feed: [{ kind: "error", message: action.message }, ...state.feed].slice(0, MAX_FEED_ITEMS),
+    };
+  }
+
+  return {
+    ...state,
+    feed: [{ kind: "event", message: action.event.message, tick: action.event.tick }, ...state.feed].slice(
+      0,
+      MAX_FEED_ITEMS,
+    ),
+  };
+}
+
 export default function Home() {
-  const [identity] = useState<{ id: string; displayName: string } | null>(() => bootstrapIdentity());
-  const [isBurstCommitted, setIsBurstCommitted] = useState(false);
-  const burstCommitments = isBurstCommitted ? 1 : player.burstCommitments;
-  const timeRemainingPercent = Math.round((match.secondsRemaining / match.totalSeconds) * 100);
+  const [identity] = useState<Identity | null>(() => bootstrapIdentity());
+  const [clientState, dispatch] = useReducer(clientReducer, initialClientState);
 
-  const handleManualAttack = () => {
-    console.log("[action] manual_attack");
-  };
+  useEffect(() => {
+    if (!identity) {
+      return;
+    }
 
-  const handleBurstToggle = () => {
-    const nextState = !isBurstCommitted;
-    setIsBurstCommitted(nextState);
-    console.log(`[action] ${nextState ? "burst_commit" : "burst_cancel"}`);
-  };
+    dispatch({ type: "socket_connecting" });
+
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL ?? "ws://127.0.0.1:8080";
+    const socket = new WebSocket(wsUrl);
+
+    socket.addEventListener("message", (raw) => {
+      const parsed = parseEnvelope(raw.data);
+      if (!parsed) {
+        dispatch({ type: "incoming_error", message: "Received invalid server payload." });
+        return;
+      }
+
+      if (parsed.type === "connected") {
+        dispatch({ type: "socket_connected", tickSeconds: parsed.tickSeconds });
+        socket.send(JSON.stringify({ type: "join", playerId: identity.id, name: identity.displayName }));
+        return;
+      }
+
+      if (parsed.type === "state") {
+        dispatch({ type: "incoming_state", snapshot: parsed.snapshot });
+        return;
+      }
+
+      if (parsed.type === "error") {
+        dispatch({ type: "incoming_error", message: parsed.message });
+      }
+    });
+
+    socket.addEventListener("close", () => {
+      dispatch({ type: "socket_disconnected", message: "Connection lost. Refresh to reconnect." });
+    });
+
+    socket.addEventListener("error", () => {
+      dispatch({ type: "incoming_error", message: "Unable to reach websocket server." });
+    });
+
+    return () => {
+      socket.close();
+    };
+  }, [identity]);
+
+  const match = clientState.snapshot
+    ? {
+        phase: clientState.snapshot.phase,
+        round: clientState.snapshot.round,
+        totalRounds: clientState.snapshot.totalRounds,
+        secondsRemaining: clientState.snapshot.phaseRemaining,
+        totalSeconds: Math.max(clientState.tickSeconds * 15, 1),
+      }
+    : fallbackMatch;
+
+  const factionHealth = useMemo(() => {
+    if (!clientState.snapshot) {
+      return [
+        { label: "Red Faction", value: 0, color: "bg-rose-500" },
+        { label: "Blue Faction", value: 0, color: "bg-sky-500" },
+      ];
+    }
+
+    return [
+      {
+        label: "Red Faction",
+        value: clientState.snapshot.factions.find((faction) => faction.id === 0)?.factionHp ?? 0,
+        color: "bg-rose-500",
+      },
+      {
+        label: "Blue Faction",
+        value: clientState.snapshot.factions.find((faction) => faction.id === 1)?.factionHp ?? 0,
+        color: "bg-sky-500",
+      },
+    ];
+  }, [clientState.snapshot]);
+
+  const timeRemainingPercent = Math.min(100, Math.max(0, Math.round((match.secondsRemaining / match.totalSeconds) * 100)));
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -53,10 +216,11 @@ export default function Home() {
           <p className="mt-2 text-sm text-slate-300">
             {identity ? `${identity.displayName} • ${identity.id}` : "Generating identity..."}
           </p>
+          <p className="mt-1 text-xs uppercase tracking-wide text-slate-400">Connection: {clientState.status}</p>
 
           <div className="mt-4 grid grid-cols-2 gap-3">
             <Stat label="Phase" value={match.phase} />
-            <Stat label="Round" value={match.round} />
+            <Stat label="Round" value={`${match.round} / ${match.totalRounds}`} />
           </div>
 
           <div className="mt-4 rounded-lg border border-slate-700 bg-slate-950/40 p-3">
@@ -80,31 +244,16 @@ export default function Home() {
         </section>
 
         <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
-          <h2 className="text-lg font-semibold">Player Panel</h2>
+          <h2 className="text-lg font-semibold">Event / Error Feed</h2>
           <ul className="mt-3 space-y-2 text-sm text-slate-300">
-            <li>HP: {player.hp}</li>
-            <li>AP: {player.ap}</li>
-            <li>Level: {player.level}</li>
-            <li>
-              EXP: {player.xp}/{player.xpRequiredForNextLevel}
-            </li>
-            <li>Teammates Ready: {player.teammatesReady}</li>
+            {clientState.feed.length === 0 ? <li>Waiting for server events...</li> : null}
+            {clientState.feed.map((item, index) => (
+              <li key={`${item.message}-${index}`} className={item.kind === "error" ? "text-rose-300" : "text-slate-300"}>
+                {item.tick !== undefined ? `[t${item.tick}] ` : ""}
+                {item.message}
+              </li>
+            ))}
           </ul>
-
-          <div className="mt-4 grid gap-2">
-            <button
-              onClick={handleManualAttack}
-              className="rounded-md bg-emerald-500 px-3 py-2 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-400"
-            >
-              Attack
-            </button>
-            <button
-              onClick={handleBurstToggle}
-              className="rounded-md bg-amber-400 px-3 py-2 text-sm font-semibold text-amber-950 transition hover:bg-amber-300"
-            >
-              {isBurstCommitted ? "Burst Cancel" : "Burst Commit"} ({burstCommitments}/{player.burstRequired})
-            </button>
-          </div>
         </section>
       </main>
     </div>
@@ -128,6 +277,18 @@ function bootstrapIdentity() {
   return { id, displayName };
 }
 
+function parseEnvelope(raw: unknown): WsEnvelope | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw) as WsEnvelope;
+  } catch {
+    return null;
+  }
+}
+
 function generateRandomDisplayName() {
   const adjectives = ["Swift", "Iron", "Silent", "Ember", "Noble", "Arcane"];
   const nouns = ["Falcon", "Warden", "Ranger", "Vanguard", "Sentinel", "Drifter"];
@@ -149,6 +310,8 @@ function Stat({ label, value }: { label: string; value: string }) {
 }
 
 function Bar({ label, value, color }: { label: string; value: number; color: string }) {
+  const clampedValue = Math.min(100, Math.max(0, value));
+
   return (
     <div>
       <div className="mb-1 flex items-center justify-between text-sm">
@@ -156,7 +319,7 @@ function Bar({ label, value, color }: { label: string; value: number; color: str
         <span>{value}%</span>
       </div>
       <div className="h-2 w-full rounded-full bg-slate-800">
-        <div className={`h-2 rounded-full ${color}`} style={{ width: `${value}%` }} />
+        <div className={`h-2 rounded-full ${color}`} style={{ width: `${clampedValue}%` }} />
       </div>
     </div>
   );
