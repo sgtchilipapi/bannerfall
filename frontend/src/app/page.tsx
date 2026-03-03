@@ -33,11 +33,20 @@ type EngineEvent = {
 
 type Snapshot = {
   tick: number;
+  ended: boolean;
   phase: string;
   phaseRemaining: number;
   round: number;
   totalRounds: number;
+  winnerFactionId: number | null;
   factions: { id: number; factionHp: number }[];
+  players: {
+    id: string;
+    factionId: number;
+    isAlive: boolean;
+    kills: number;
+    damageDealt: number;
+  }[];
   events: EngineEvent[];
 };
 
@@ -207,6 +216,29 @@ export default function Home() {
 
   const timeRemainingPercent = Math.min(100, Math.max(0, Math.round((match.secondsRemaining / match.totalSeconds) * 100)));
 
+  const summary = useMemo(() => {
+    if (!clientState.snapshot?.ended) {
+      return null;
+    }
+
+    const winnerFactionId = clientState.snapshot.winnerFactionId;
+    const winnerLabel =
+      winnerFactionId === 0 ? "Red Faction" : winnerFactionId === 1 ? "Blue Faction" : "Draw / No winner";
+
+    const totalPlayers = clientState.snapshot.players.length;
+    const alivePlayers = clientState.snapshot.players.filter((player) => player.isAlive).length;
+    const totalKills = clientState.snapshot.players.reduce((sum, player) => sum + player.kills, 0);
+    const totalDamage = clientState.snapshot.players.reduce((sum, player) => sum + player.damageDealt, 0);
+
+    return {
+      winnerLabel,
+      totalPlayers,
+      alivePlayers,
+      totalKills,
+      totalDamage,
+    };
+  }, [clientState.snapshot]);
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <main className="mx-auto flex w-full max-w-md flex-col gap-4 px-4 py-5">
@@ -242,6 +274,19 @@ export default function Home() {
             ))}
           </div>
         </section>
+
+        {summary ? (
+          <section className="rounded-xl border border-emerald-700/50 bg-emerald-950/30 p-4">
+            <h2 className="text-lg font-semibold text-emerald-200">Match Summary</h2>
+            <p className="mt-1 text-sm text-emerald-100">Winner: {summary.winnerLabel}</p>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <Stat label="Players" value={`${summary.alivePlayers} / ${summary.totalPlayers} alive`} />
+              <Stat label="Total Kills" value={String(summary.totalKills)} />
+              <Stat label="Total Damage" value={String(summary.totalDamage)} />
+              <Stat label="Final Round" value={`${match.round} / ${match.totalRounds}`} />
+            </div>
+          </section>
+        ) : null}
 
         <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
           <h2 className="text-lg font-semibold">Event / Error Feed</h2>
