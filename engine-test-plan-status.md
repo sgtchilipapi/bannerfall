@@ -22,12 +22,12 @@ Source plan: `engine-test-plan.md`.
   Status: **Implemented** — covers newest-exposed-first targeting, overflow into faction HP, and density-scaled damage totals.
 - [x] **`xp/level` suite**  
   Status: **Implemented** — covers +5 manual-landed XP, +2 kill XP, threshold leveling, and attack-power scaling/level-cap behavior.
+- [x] **`snapshot visibility` suite**  
+  Status: **Implemented** — verifies burst commit visibility is restricted to teammates and redacted for opponents/spectators.
 - [x] **`win conditions` suite**  
   Status: **Implemented** — covers immediate faction-HP depletion, round-limit higher-HP winner selection, and round-limit tie handling in `backend/src/engine/win-conditions.test.ts`.
 - [x] **`death/reset` suite**  
   Status: **Implemented** — covers death handling state transitions, dead-player action blocking, and per-round reset behavior that revives players while preserving level/faction HP.
-- [ ] **`snapshot visibility` suite**  
-  Status: **Not implemented**.
 - [ ] **`server protocol` integration suite**  
   Status: **Not implemented**.
 - [ ] **Server refactor for testability (`createServer()` / startup separation)**  
@@ -43,7 +43,7 @@ Source plan: `engine-test-plan.md`.
 
 Current implementation is **incomplete** relative to the test plan.
 
-- Implemented plan suites: **9 / 11** (`density`, `lobby`, `phase`, `manual attack`, `burst`, `damage routing`, `xp/level`, `win conditions`, `death/reset`).
+- Implemented plan suites: **10 / 11** (`density`, `lobby`, `phase`, `manual attack`, `burst`, `damage routing`, `xp/level`, `snapshot visibility`, `win conditions`, `death/reset`).
 - Core blockers:
   - Missing 4 planned suites.
   - No server factory refactor for integration-test isolation.
