@@ -1,25 +1,25 @@
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
-import { WarEngine } from "./engine/warEngine.js";
+import { LobbyManager, LEGACY_LOBBY_ID } from "./lobbyManager.js";
 
-/** Per-socket binding to an engine player id after successful join. */
+/** Per-socket binding to a lobby/player after successful join. */
 type Session = {
   playerId: string | null;
+  lobbyId: string | null;
 };
 
 export type CreateServerOptions = {
   port?: number;
   tickIntervalMs?: number;
-  engine?: WarEngine;
   autoStartTick?: boolean;
 };
 
 export type BannerfallServer = {
-  engine: WarEngine;
+  lobbyManager: LobbyManager;
   wss: WebSocketServer;
   port: number;
   tickIntervalMs: number;
-  broadcastSnapshots: () => void;
+  broadcastLobbySnapshots: (lobbyId: string) => void;
   startTickLoop: () => void;
   stopTickLoop: () => void;
   close: () => Promise<void>;
@@ -69,15 +69,37 @@ export function createServer(options: CreateServerOptions = {}): BannerfallServe
   const port = options.port ?? Number(process.env.PORT ?? 8080);
   const tickIntervalMs = options.tickIntervalMs ?? 1000;
   const autoStartTick = options.autoStartTick ?? true;
-  const engine = options.engine ?? new WarEngine();
+  const lobbyManager = new LobbyManager();
   const wss = new WebSocketServer({ port });
   const sessions = new Map<WebSocket, Session>();
   let tickTimer: NodeJS.Timeout | null = null;
 
-  const broadcastSnapshots = (): void => {
+  const sendState = (ws: WebSocket, session: Session): void => {
+    const lobbyId = session.lobbyId ?? LEGACY_LOBBY_ID;
+    const lobby = lobbyManager.getLobbyById(lobbyId);
+    if (!lobby) {
+      return;
+    }
+
+    const snapshot = lobby.engine.getSnapshotForPlayer(session.playerId);
+    send(ws, "state", { lobbyId, joinCode: lobby.joinCode, snapshot });
+  };
+
+  const broadcastLobbySnapshots = (lobbyId: string): void => {
+    const lobby = lobbyManager.getLobbyById(lobbyId);
+    if (!lobby) {
+      return;
+    }
+
     for (const [ws, session] of sessions.entries()) {
-      const snapshot = engine.getSnapshotForPlayer(session.playerId);
-      send(ws, "state", { snapshot });
+      if ((session.lobbyId ?? LEGACY_LOBBY_ID) !== lobbyId) {
+        continue;
+      }
+      send(ws, "state", {
+        lobbyId,
+        joinCode: lobby.joinCode,
+        snapshot: lobby.engine.getSnapshotForPlayer(session.playerId),
+      });
     }
   };
 
@@ -95,17 +117,33 @@ export function createServer(options: CreateServerOptions = {}): BannerfallServe
     }
 
     tickTimer = setInterval(() => {
-      engine.tick();
-      broadcastSnapshots();
+      lobbyManager.tickAllLobbies();
+      for (const lobby of lobbyManager.getAllLobbies()) {
+        broadcastLobbySnapshots(lobby.lobbyId);
+      }
     }, tickIntervalMs);
+  };
+
+  const resolveLobbyFromJoinRequest = (msg: Record<string, unknown>) => {
+    if (typeof msg.lobbyId === "string" && msg.lobbyId.trim().length > 0) {
+      return lobbyManager.getLobbyById(msg.lobbyId.trim());
+    }
+    if (typeof msg.joinCode === "string" && msg.joinCode.trim().length > 0) {
+      return lobbyManager.getLobbyByJoinCode(msg.joinCode);
+    }
+    return null;
   };
 
   /** Connection lifecycle and action message handling. */
   wss.on("connection", (ws) => {
-    // New sockets start unauthenticated until they issue "join".
-    sessions.set(ws, { playerId: null });
+    // Legacy compatibility: sockets start in legacy lobby until explicit join_lobby.
+    sessions.set(ws, { playerId: null, lobbyId: LEGACY_LOBBY_ID });
     send(ws, "connected", { port, tickSeconds: tickIntervalMs / 1000 });
-    send(ws, "state", { snapshot: engine.getSnapshotForPlayer(null) });
+
+    const initialSession = sessions.get(ws);
+    if (initialSession) {
+      sendState(ws, initialSession);
+    }
 
     ws.on("message", (raw) => {
       const msg = parseMessage(raw);
@@ -120,10 +158,21 @@ export function createServer(options: CreateServerOptions = {}): BannerfallServe
         return;
       }
 
-      // Join command binds this socket to a persistent engine player id.
-      if (type === "join") {
+      if (type === "create_lobby") {
+        const result = lobbyManager.createLobby();
+        send(ws, "lobby_created", { lobbyId: result.lobbyId, joinCode: result.joinCode });
+        return;
+      }
+
+      if (type === "join_lobby") {
         if (session.playerId !== null) {
-          send(ws, "error", { message: "This socket already joined a player." });
+          send(ws, "error", { message: "This socket is already joined. Leave/reconnect first." });
+          return;
+        }
+
+        const lobby = resolveLobbyFromJoinRequest(msg);
+        if (!lobby) {
+          send(ws, "error", { message: "Lobby not found." });
           return;
         }
 
@@ -132,49 +181,134 @@ export function createServer(options: CreateServerOptions = {}): BannerfallServe
             ? msg.playerId.trim()
             : randomUUID();
 
+        const existingLobbyId = lobbyManager.getPlayerLobbyId(requestedPlayerId);
+        if (existingLobbyId && existingLobbyId !== lobby.lobbyId) {
+          send(ws, "error", { message: "This playerId is already bound to another lobby." });
+          return;
+        }
+
         const requestedName =
           typeof msg.name === "string" && msg.name.trim().length > 0 ? msg.name.trim() : randomName();
 
-        const result = engine.addPlayer(requestedPlayerId, requestedName);
+        const joinResult = lobby.engine.addPlayer(requestedPlayerId, requestedName);
+        if (!joinResult.ok || !joinResult.playerId || joinResult.factionId === null) {
+          send(ws, "error", { message: joinResult.error ?? "Join failed." });
+          return;
+        }
+
+        session.playerId = joinResult.playerId;
+        session.lobbyId = lobby.lobbyId;
+        lobbyManager.bindPlayerToLobby(joinResult.playerId, lobby.lobbyId);
+        lobby.engine.setPlayerConnected(joinResult.playerId, true);
+
+        send(ws, "lobby_joined", {
+          lobbyId: lobby.lobbyId,
+          joinCode: lobby.joinCode,
+          playerId: joinResult.playerId,
+          factionId: joinResult.factionId,
+          name: requestedName,
+        });
+
+        // Legacy compatibility event for old clients.
+        send(ws, "joined", {
+          playerId: joinResult.playerId,
+          factionId: joinResult.factionId,
+          name: requestedName,
+        });
+
+        broadcastLobbySnapshots(lobby.lobbyId);
+        return;
+      }
+
+      // Legacy join command binds this socket to a player in the legacy lobby.
+      if (type === "join") {
+        if (session.playerId !== null) {
+          send(ws, "error", { message: "This socket already joined a player." });
+          return;
+        }
+
+        const lobby = lobbyManager.ensureLegacyLobby();
+        const requestedPlayerId =
+          typeof msg.playerId === "string" && msg.playerId.trim().length > 0 ? msg.playerId.trim() : randomUUID();
+
+        const existingLobbyId = lobbyManager.getPlayerLobbyId(requestedPlayerId);
+        if (existingLobbyId && existingLobbyId !== lobby.lobbyId) {
+          send(ws, "error", { message: "This playerId is already bound to another lobby." });
+          return;
+        }
+
+        const requestedName =
+          typeof msg.name === "string" && msg.name.trim().length > 0 ? msg.name.trim() : randomName();
+
+        const result = lobby.engine.addPlayer(requestedPlayerId, requestedName);
         if (!result.ok || !result.playerId || result.factionId === null) {
           send(ws, "error", { message: result.error ?? "Join failed." });
           return;
         }
 
         session.playerId = result.playerId;
-        engine.setPlayerConnected(result.playerId, true);
+        session.lobbyId = lobby.lobbyId;
+        lobbyManager.bindPlayerToLobby(result.playerId, lobby.lobbyId);
+        lobby.engine.setPlayerConnected(result.playerId, true);
         send(ws, "joined", {
           playerId: result.playerId,
           factionId: result.factionId,
           name: requestedName,
         });
-        broadcastSnapshots();
+        broadcastLobbySnapshots(lobby.lobbyId);
         return;
       }
 
-      // Allows clients to explicitly fetch current state on demand.
       if (type === "state") {
-        send(ws, "state", { snapshot: engine.getSnapshotForPlayer(session.playerId) });
+        sendState(ws, session);
         return;
       }
 
-      if (!session.playerId) {
+      if (type === "leave_lobby") {
+        if (!session.playerId || !session.lobbyId) {
+          send(ws, "error", { message: "Not currently joined to a lobby." });
+          return;
+        }
+
+        const lobby = lobbyManager.getLobbyById(session.lobbyId);
+        if (!lobby) {
+          send(ws, "error", { message: "Lobby not found." });
+          return;
+        }
+
+        const result = lobby.engine.requestLobbyLeave(session.playerId);
+        if (!result.ok) {
+          send(ws, "error", { message: result.error ?? "Leave failed." });
+          return;
+        }
+
+        send(ws, "ack", { action: type, tick: lobby.engine.getCurrentTick(), lobbyId: session.lobbyId });
+        broadcastLobbySnapshots(session.lobbyId);
+        return;
+      }
+
+      if (!session.playerId || !session.lobbyId) {
         send(ws, "error", { message: "Join first before sending actions." });
         return;
       }
 
-      // Action routing to engine command surface.
+      const lobby = lobbyManager.getLobbyById(session.lobbyId);
+      if (!lobby) {
+        send(ws, "error", { message: "Lobby not found." });
+        return;
+      }
+
       let result;
       if (type === "request_leave") {
-        result = engine.requestLobbyLeave(session.playerId);
+        result = lobby.engine.requestLobbyLeave(session.playerId);
       } else if (type === "cancel_leave") {
-        result = engine.cancelLobbyLeave(session.playerId);
+        result = lobby.engine.cancelLobbyLeave(session.playerId);
       } else if (type === "manual_attack") {
-        result = engine.queueManualAttack(session.playerId);
+        result = lobby.engine.queueManualAttack(session.playerId);
       } else if (type === "burst_commit") {
-        result = engine.setBurstCommit(session.playerId, true);
+        result = lobby.engine.setBurstCommit(session.playerId, true);
       } else if (type === "burst_cancel") {
-        result = engine.setBurstCommit(session.playerId, false);
+        result = lobby.engine.setBurstCommit(session.playerId, false);
       } else {
         send(ws, "error", { message: `Unknown action type: ${type}` });
         return;
@@ -185,8 +319,8 @@ export function createServer(options: CreateServerOptions = {}): BannerfallServe
         return;
       }
 
-      send(ws, "ack", { action: type, tick: engine.getCurrentTick() });
-      broadcastSnapshots();
+      send(ws, "ack", { action: type, tick: lobby.engine.getCurrentTick(), lobbyId: session.lobbyId });
+      broadcastLobbySnapshots(session.lobbyId);
     });
 
     ws.on("close", () => {
@@ -195,16 +329,19 @@ export function createServer(options: CreateServerOptions = {}): BannerfallServe
         return;
       }
 
-      if (session.playerId) {
-        engine.setPlayerConnected(session.playerId, false);
-        if (!engine.isStarted()) {
-          // Before match start, disconnected players are auto-marked for delayed leave.
-          engine.requestLobbyLeave(session.playerId);
+      if (session.playerId && session.lobbyId) {
+        const lobby = lobbyManager.getLobbyById(session.lobbyId);
+        if (lobby) {
+          lobby.engine.setPlayerConnected(session.playerId, false);
+          if (!lobby.engine.isStarted()) {
+            // Before match start, disconnected players are auto-marked for delayed leave.
+            lobby.engine.requestLobbyLeave(session.playerId);
+          }
+          broadcastLobbySnapshots(session.lobbyId);
         }
       }
 
       sessions.delete(ws);
-      broadcastSnapshots();
     });
   });
 
@@ -231,11 +368,11 @@ export function createServer(options: CreateServerOptions = {}): BannerfallServe
   };
 
   return {
-    engine,
+    lobbyManager,
     wss,
     port,
     tickIntervalMs,
-    broadcastSnapshots,
+    broadcastLobbySnapshots,
     startTickLoop,
     stopTickLoop,
     close,
