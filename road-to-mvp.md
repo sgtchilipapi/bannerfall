@@ -30,16 +30,15 @@ This checklist translates the recommended implementation path into practical, in
   - [X] connect/disconnect handling
   - [X] auto-join payload using local identity
   - [X] incoming message reducer for state/events/errors
-- [ ] Build minimal playable HUD:
-  - [ ] phase, round, timer
-  - [ ] faction HP bars/values
-  - [ ] roster with player status (alive/exposed/cooldown/level)
-  - [ ] self panel (your stats + action availability)
-- [ ] Add combat controls:
-  - [ ] manual attack
-  - [ ] burst commit
-  - [ ] burst cancel
-- [ ] Add basic event/error feed.
+- [X] Build minimal playable HUD:
+  - [X] phase, round, timer
+  - [X] faction HP bars/values
+  - [X] self panel (your stats + action availability)
+- [X] Add combat controls:
+  - [X] manual attack
+  - [X] burst commit
+  - [X] burst cancel
+- X] Add basic event/error feed on to the console log.
 - [X] Add end-of-match summary view (winner + top-level stats).
 
 ## Phase 3 — Post-Match Persistence and Chain-Ready Interface
