@@ -965,6 +965,7 @@ export class WarEngine {
       name: player.name,
       factionId: player.factionId,
       level: player.level,
+      xp: player.xp,
       hp: roundDamage(player.hp),
       isAlive: player.isAlive,
       isExposed: player.isExposed,

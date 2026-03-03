@@ -21,26 +21,25 @@ This checklist translates the recommended implementation path into practical, in
 
 ## Phase 2 — Frontend MVP Gameplay Shell (Thin, Functional UI)
 
-- [ ] Replace starter Next.js template page with MVP game screen.
-- [ ] Add local identity bootstrap on first load:
-  - [ ] generate UUID
-  - [ ] generate random display name
-  - [ ] store both in `localStorage`
-- [ ] Implement websocket client lifecycle:
-  - [ ] connect/disconnect handling
-  - [ ] auto-join payload using local identity
-  - [ ] incoming message reducer for state/events/errors
-- [ ] Build minimal playable HUD:
-  - [ ] phase, round, timer
-  - [ ] faction HP bars/values
-  - [ ] roster with player status (alive/exposed/cooldown/level)
-  - [ ] self panel (your stats + action availability)
-- [ ] Add combat controls:
-  - [ ] manual attack
-  - [ ] burst commit
-  - [ ] burst cancel
-- [ ] Add basic event/error feed.
-- [ ] Add end-of-match summary view (winner + top-level stats).
+- [X] Replace starter Next.js template page with MVP game screen.
+- [X] Add local identity bootstrap on first load:
+  - [X] generate UUID
+  - [X] generate random display name
+  - [X] store both in `localStorage`
+- [X] Implement websocket client lifecycle:
+  - [X] connect/disconnect handling
+  - [X] auto-join payload using local identity
+  - [X] incoming message reducer for state/events/errors
+- [X] Build minimal playable HUD:
+  - [X] phase, round, timer
+  - [X] faction HP bars/values
+  - [X] self panel (your stats + action availability)
+- [X] Add combat controls:
+  - [X] manual attack
+  - [X] burst commit
+  - [X] burst cancel
+- [X] Add basic event/error feed on to the console log.
+- [X] Add end-of-match summary view (winner + top-level stats).
 
 ## Phase 3 — Post-Match Persistence and Chain-Ready Interface
 

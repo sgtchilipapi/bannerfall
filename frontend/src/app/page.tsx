@@ -1,65 +1,455 @@
-import Image from "next/image";
+"use client";
+
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+
+const LOCAL_ID_KEY = "bannerfall.player.id";
+const LOCAL_NAME_KEY = "bannerfall.player.displayName";
+const MAX_FEED_ITEMS = 8;
+
+const fallbackMatch = {
+  phase: "waiting",
+  round: 1,
+  totalRounds: 5,
+  secondsRemaining: 0,
+  totalSeconds: 15,
+};
+
+type Identity = {
+  id: string;
+  displayName: string;
+};
+
+type FeedItem = {
+  kind: "event" | "error";
+  message: string;
+  tick?: number;
+};
+
+type EngineEvent = {
+  tick: number;
+  type: string;
+  message: string;
+};
+
+type Snapshot = {
+  tick: number;
+  ended: boolean;
+  phase: string;
+  phaseRemaining: number;
+  round: number;
+  totalRounds: number;
+  winnerFactionId: number | null;
+  selfPlayerId: string | null;
+  selfFactionId: number | null;
+  factions: { id: number; factionHp: number; aliveCount: number; burstCommitCount: number | null }[];
+  players: {
+    id: string;
+    name: string;
+    factionId: number;
+    level: number;
+    xp: number;
+    attackPower: number;
+    isAlive: boolean;
+    isCommittedToBurst: boolean | null;
+    kills: number;
+    damageDealt: number;
+  }[];
+  events: EngineEvent[];
+};
+
+type WsEnvelope =
+  | { type: "connected"; tickSeconds: number }
+  | { type: "joined"; playerId: string; factionId: number; name: string }
+  | { type: "state"; snapshot: Snapshot }
+  | { type: "error"; message: string }
+  | { type: string; [key: string]: unknown };
+
+type ConnectionStatus = "connecting" | "connected" | "disconnected";
+
+type ClientState = {
+  status: ConnectionStatus;
+  tickSeconds: number;
+  snapshot: Snapshot | null;
+  feed: FeedItem[];
+  processedEventCount: number;
+};
+
+type ClientAction =
+  | { type: "socket_connecting" }
+  | { type: "socket_connected"; tickSeconds: number }
+  | { type: "socket_disconnected"; message: string }
+  | { type: "incoming_state"; snapshot: Snapshot }
+  | { type: "incoming_error"; message: string }
+  | { type: "incoming_event"; event: EngineEvent };
+
+const initialClientState: ClientState = {
+  status: "connecting",
+  tickSeconds: 1,
+  snapshot: null,
+  feed: [],
+  processedEventCount: 0,
+};
+
+function clientReducer(state: ClientState, action: ClientAction): ClientState {
+  if (action.type === "socket_connecting") {
+    return { ...state, status: "connecting" };
+  }
+
+  if (action.type === "socket_connected") {
+    return { ...state, status: "connected", tickSeconds: action.tickSeconds };
+  }
+
+  if (action.type === "socket_disconnected") {
+    return {
+      ...state,
+      status: "disconnected",
+      feed: [{ kind: "error", message: action.message }, ...state.feed].slice(0, MAX_FEED_ITEMS),
+    };
+  }
+
+  if (action.type === "incoming_state") {
+    const newEvents = action.snapshot.events.slice(state.processedEventCount);
+    const nextFeed = [...state.feed];
+
+    for (const event of newEvents) {
+      nextFeed.unshift({ kind: "event", message: event.message, tick: event.tick });
+    }
+
+    return {
+      ...state,
+      snapshot: action.snapshot,
+      feed: nextFeed.slice(0, MAX_FEED_ITEMS),
+      processedEventCount: action.snapshot.events.length,
+    };
+  }
+
+  if (action.type === "incoming_error") {
+    return {
+      ...state,
+      feed: [{ kind: "error", message: action.message }, ...state.feed].slice(0, MAX_FEED_ITEMS),
+    };
+  }
+
+  return {
+    ...state,
+    feed: [{ kind: "event", message: action.event.message, tick: action.event.tick }, ...state.feed].slice(
+      0,
+      MAX_FEED_ITEMS,
+    ),
+  };
+}
 
 export default function Home() {
+  const [identity] = useState<Identity | null>(() => bootstrapIdentity());
+  const [clientState, dispatch] = useReducer(clientReducer, initialClientState);
+  const socketRef = useRef<WebSocket | null>(null);
+
+  useEffect(() => {
+    if (!identity) {
+      return;
+    }
+
+    dispatch({ type: "socket_connecting" });
+
+    const wsUrl = process.env.NEXT_PUBLIC_WS_URL ?? "ws://127.0.0.1:8080";
+    const socket = new WebSocket(wsUrl);
+    socketRef.current = socket;
+
+    socket.addEventListener("message", (raw) => {
+      const parsed = parseEnvelope(raw.data);
+      if (!parsed) {
+        dispatch({ type: "incoming_error", message: "Received invalid server payload." });
+        return;
+      }
+
+      if (parsed.type === "connected") {
+        dispatch({ type: "socket_connected", tickSeconds: parsed.tickSeconds });
+        socket.send(JSON.stringify({ type: "join", playerId: identity.id, name: identity.displayName }));
+        return;
+      }
+
+      if (parsed.type === "state") {
+        dispatch({ type: "incoming_state", snapshot: parsed.snapshot });
+        return;
+      }
+
+      if (parsed.type === "error") {
+        dispatch({ type: "incoming_error", message: parsed.message });
+      }
+    });
+
+    socket.addEventListener("close", () => {
+      dispatch({ type: "socket_disconnected", message: "Connection lost. Refresh to reconnect." });
+    });
+
+    socket.addEventListener("error", () => {
+      dispatch({ type: "incoming_error", message: "Unable to reach websocket server." });
+    });
+
+    return () => {
+      socketRef.current = null;
+      socket.close();
+    };
+  }, [identity]);
+
+  const match = clientState.snapshot
+    ? {
+        phase: clientState.snapshot.phase,
+        round: clientState.snapshot.round,
+        totalRounds: clientState.snapshot.totalRounds,
+        secondsRemaining: clientState.snapshot.phaseRemaining,
+        totalSeconds: Math.max(clientState.tickSeconds * 15, 1),
+      }
+    : fallbackMatch;
+
+  const factionHealth = useMemo(() => {
+    if (!clientState.snapshot) {
+      return [
+        { label: "Red Faction", value: 0, color: "bg-rose-500" },
+        { label: "Blue Faction", value: 0, color: "bg-sky-500" },
+      ];
+    }
+
+    return [
+      {
+        label: "Red Faction",
+        value: clientState.snapshot.factions.find((faction) => faction.id === 0)?.factionHp ?? 0,
+        color: "bg-rose-500",
+      },
+      {
+        label: "Blue Faction",
+        value: clientState.snapshot.factions.find((faction) => faction.id === 1)?.factionHp ?? 0,
+        color: "bg-sky-500",
+      },
+    ];
+  }, [clientState.snapshot]);
+
+  const timeRemainingPercent = Math.min(100, Math.max(0, Math.round((match.secondsRemaining / match.totalSeconds) * 100)));
+
+  const selfPlayer = useMemo(() => {
+    if (!clientState.snapshot?.selfPlayerId) {
+      return null;
+    }
+
+    return clientState.snapshot.players.find((player) => player.id === clientState.snapshot?.selfPlayerId) ?? null;
+  }, [clientState.snapshot]);
+
+  const readyCounts = useMemo(() => {
+    if (clientState.snapshot?.selfFactionId === null || clientState.snapshot?.selfFactionId === undefined) {
+      return null;
+    }
+
+    const myFaction = clientState.snapshot.factions.find((faction) => faction.id === clientState.snapshot?.selfFactionId);
+    if (!myFaction) {
+      return null;
+    }
+
+    const aliveCount = Math.max(myFaction.aliveCount, 1);
+    const required = Math.max(1, Math.ceil(aliveCount * 0.7));
+    const committed = myFaction.burstCommitCount ?? 0;
+
+    return { committed, required };
+  }, [clientState.snapshot]);
+
+  const sendAction = (type: "manual_attack" | "burst_commit" | "burst_cancel") => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      dispatch({ type: "incoming_error", message: "Action failed: websocket is not connected." });
+      return;
+    }
+
+    socket.send(JSON.stringify({ type }));
+  };
+
+  const summary = useMemo(() => {
+    if (!clientState.snapshot?.ended) {
+      return null;
+    }
+
+    const winnerFactionId = clientState.snapshot.winnerFactionId;
+    const winnerLabel =
+      winnerFactionId === 0 ? "Red Faction" : winnerFactionId === 1 ? "Blue Faction" : "Draw / No winner";
+
+    const totalPlayers = clientState.snapshot.players.length;
+    const alivePlayers = clientState.snapshot.players.filter((player) => player.isAlive).length;
+    const totalKills = clientState.snapshot.players.reduce((sum, player) => sum + player.kills, 0);
+    const totalDamage = clientState.snapshot.players.reduce((sum, player) => sum + player.damageDealt, 0);
+
+    return {
+      winnerLabel,
+      totalPlayers,
+      alivePlayers,
+      totalKills,
+      totalDamage,
+    };
+  }, [clientState.snapshot]);
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <main className="mx-auto flex w-full max-w-md flex-col gap-4 px-4 py-5">
+        <section className="rounded-xl border border-slate-800 bg-slate-900/80 p-4 shadow-lg shadow-black/20">
+          <p className="text-xs uppercase tracking-widest text-slate-400">Bannerfall MVP</p>
+          <h1 className="mt-1 text-2xl font-bold tracking-tight">Live Match</h1>
+          <p className="mt-2 text-sm text-slate-300">
+            {identity ? `${identity.displayName} • ${identity.id}` : "Generating identity..."}
           </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+          <p className="mt-1 text-xs uppercase tracking-wide text-slate-400">Connection: {clientState.status}</p>
+
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <Stat label="Phase" value={match.phase} />
+            <Stat label="Round" value={`${match.round} / ${match.totalRounds}`} />
+          </div>
+
+          <div className="mt-4 rounded-lg border border-slate-700 bg-slate-950/40 p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-xs uppercase tracking-wide text-slate-400">⏳ Time Remaining</p>
+              <p className="text-sm font-semibold">{match.secondsRemaining}s</p>
+            </div>
+            <div className="h-2 w-full rounded-full bg-slate-800">
+              <div className="h-2 rounded-full bg-amber-400" style={{ width: `${timeRemainingPercent}%` }} />
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+          <h2 className="text-lg font-semibold">Faction Health</h2>
+          <div className="mt-4 space-y-3">
+            {factionHealth.map((faction) => (
+              <Bar key={faction.label} label={faction.label} value={faction.value} color={faction.color} />
+            ))}
+          </div>
+        </section>
+
+        <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+          <h2 className="text-lg font-semibold">Player Panel</h2>
+          {selfPlayer ? (
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <Stat label="Player" value={selfPlayer.name} />
+              <Stat label="Level" value={String(selfPlayer.level)} />
+              <Stat label="ATK" value={String(selfPlayer.attackPower)} />
+              <Stat label="EXP" value={String(selfPlayer.xp)} />
+              <Stat
+                label="Teammates Ready"
+                value={readyCounts ? `${readyCounts.committed} / ${readyCounts.required}` : "-"}
+              />
+            </div>
+          ) : (
+            <p className="mt-3 text-sm text-slate-300">Join the match to view your player stats.</p>
+          )}
+
+          <div className="mt-4 grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => sendAction("manual_attack")}
+              disabled={!selfPlayer || clientState.status !== "connected"}
+              className="rounded-lg border border-rose-500/50 bg-rose-600/30 px-3 py-2 text-sm font-semibold transition hover:bg-rose-500/40 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Attack
+            </button>
+            <button
+              type="button"
+              onClick={() => sendAction(selfPlayer?.isCommittedToBurst ? "burst_cancel" : "burst_commit")}
+              disabled={!selfPlayer || clientState.status !== "connected"}
+              className="rounded-lg border border-indigo-500/50 bg-indigo-600/30 px-3 py-2 text-sm font-semibold transition hover:bg-indigo-500/40 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {selfPlayer?.isCommittedToBurst
+                ? "Cancel"
+                : `Burst ${readyCounts?.committed ?? 0}/${readyCounts?.required ?? "-"}`}
+            </button>
+          </div>
+        </section>
+
+        {summary ? (
+          <section className="rounded-xl border border-emerald-700/50 bg-emerald-950/30 p-4">
+            <h2 className="text-lg font-semibold text-emerald-200">Match Summary</h2>
+            <p className="mt-1 text-sm text-emerald-100">Winner: {summary.winnerLabel}</p>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              <Stat label="Players" value={`${summary.alivePlayers} / ${summary.totalPlayers} alive`} />
+              <Stat label="Total Kills" value={String(summary.totalKills)} />
+              <Stat label="Total Damage" value={String(summary.totalDamage)} />
+              <Stat label="Final Round" value={`${match.round} / ${match.totalRounds}`} />
+            </div>
+          </section>
+        ) : null}
+
+        <section className="rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+          <h2 className="text-lg font-semibold">Event / Error Feed</h2>
+          <ul className="mt-3 space-y-2 text-sm text-slate-300">
+            {clientState.feed.length === 0 ? <li>Waiting for server events...</li> : null}
+            {clientState.feed.map((item, index) => (
+              <li key={`${item.message}-${index}`} className={item.kind === "error" ? "text-rose-300" : "text-slate-300"}>
+                {item.tick !== undefined ? `[t${item.tick}] ` : ""}
+                {item.message}
+              </li>
+            ))}
+          </ul>
+        </section>
       </main>
+    </div>
+  );
+}
+
+function bootstrapIdentity() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  const existingId = localStorage.getItem(LOCAL_ID_KEY);
+  const existingDisplayName = localStorage.getItem(LOCAL_NAME_KEY);
+
+  const id = existingId ?? crypto.randomUUID();
+  const displayName = existingDisplayName ?? generateRandomDisplayName();
+
+  localStorage.setItem(LOCAL_ID_KEY, id);
+  localStorage.setItem(LOCAL_NAME_KEY, displayName);
+
+  return { id, displayName };
+}
+
+function parseEnvelope(raw: unknown): WsEnvelope | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw) as WsEnvelope;
+  } catch {
+    return null;
+  }
+}
+
+function generateRandomDisplayName() {
+  const adjectives = ["Swift", "Iron", "Silent", "Ember", "Noble", "Arcane"];
+  const nouns = ["Falcon", "Warden", "Ranger", "Vanguard", "Sentinel", "Drifter"];
+
+  const adjective = adjectives[Math.floor(Math.random() * adjectives.length)];
+  const noun = nouns[Math.floor(Math.random() * nouns.length)];
+  const suffix = Math.floor(100 + Math.random() * 900);
+
+  return `${adjective}${noun}${suffix}`;
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-slate-700 bg-slate-950/40 p-3">
+      <p className="text-xs uppercase tracking-wide text-slate-400">{label}</p>
+      <p className="mt-1 text-lg font-semibold">{value}</p>
+    </div>
+  );
+}
+
+function Bar({ label, value, color }: { label: string; value: number; color: string }) {
+  const clampedValue = Math.min(100, Math.max(0, value));
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between text-sm">
+        <span>{label}</span>
+        <span>{value}%</span>
+      </div>
+      <div className="h-2 w-full rounded-full bg-slate-800">
+        <div className={`h-2 rounded-full ${color}`} style={{ width: `${clampedValue}%` }} />
+      </div>
     </div>
   );
 }
