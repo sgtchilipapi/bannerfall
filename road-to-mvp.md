@@ -4,7 +4,7 @@ This checklist translates the recommended implementation path into practical, in
 
 ## Phase 1 — Backend Completion (Authoritative Tick Engine)
 
-- [ ] Confirm all gameplay constants match MVP values (tick rate, rounds, HP/AP/XP, cooldowns, burst threshold, density params).
+- [X] Confirm all gameplay constants match MVP values (tick rate, rounds, HP/AP/XP, cooldowns, burst threshold, density params).
 - [ ] Add server protocol integration tests for:
   - [ ] `connected` envelope on websocket open
   - [ ] `join` success/failure paths
