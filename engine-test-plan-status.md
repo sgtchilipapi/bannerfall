@@ -24,8 +24,8 @@ Source plan: `engine-test-plan.md`.
   Status: **Implemented** — covers +5 manual-landed XP, +2 kill XP, threshold leveling, and attack-power scaling/level-cap behavior.
 - [ ] **`death/reset` suite**  
   Status: **Not implemented**.
-- [ ] **`win conditions` suite**  
-  Status: **Not implemented**.
+- [x] **`win conditions` suite**  
+  Status: **Implemented** — covers immediate faction-HP depletion, round-limit higher-HP winner selection, and round-limit tie handling in `backend/src/engine/win-conditions.test.ts`.
 - [ ] **`snapshot visibility` suite**  
   Status: **Not implemented**.
 - [ ] **`server protocol` integration suite**  
@@ -43,7 +43,7 @@ Source plan: `engine-test-plan.md`.
 
 Current implementation is **incomplete** relative to the test plan.
 
-- Implemented plan suites: **7 / 11** (`density`, `lobby`, `phase`, `manual attack`, `burst`, `damage routing`, `xp/level`).
+- Implemented plan suites: **8 / 11** (`density`, `lobby`, `phase`, `manual attack`, `burst`, `damage routing`, `xp/level`, `win conditions`).
 - Core blockers:
   - Missing 4 planned suites.
   - No server factory refactor for integration-test isolation.
