@@ -11,6 +11,7 @@ declare module "ws" {
     static readonly OPEN: number;
     readonly readyState: number;
     send(data: string): void;
+    close(): void;
     on(event: "message", listener: (data: RawData) => void): this;
     on(event: "close", listener: () => void): this;
   }
@@ -19,5 +20,6 @@ declare module "ws" {
   export class WebSocketServer {
     constructor(options: { port: number });
     on(event: "connection", listener: (socket: WebSocket) => void): this;
+    close(callback?: (error?: Error) => void): void;
   }
 }
