@@ -12,10 +12,10 @@ This checklist translates the recommended implementation path into practical, in
   - [X] action `ack` for valid actions
   - [X] `error` handling for invalid actions
   - [X] malformed JSON handling
-- [ ] Add reusable backend test helpers:
-  - [ ] engine fixture setup
-  - [ ] websocket client test harness
-  - [ ] tick advancement utilities
+- [X] Add reusable backend test helpers:
+  - [X] engine fixture setup
+  - [X] websocket client test harness
+  - [X] tick advancement utilities
 - [ ] Validate deterministic replay behavior (same scripted actions => same final snapshot/logs).
 - [X] Ensure one-command backend validation stays green: `npm test`.
 
