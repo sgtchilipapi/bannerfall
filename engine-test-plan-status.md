@@ -16,8 +16,8 @@ Source plan: `engine-test-plan.md`.
   Status: **Implemented** — verifies prep/combat/transition timing, round increment, and round-limit end-state.
 - [x] **`manual attack` suite**  
   Status: **Implemented** — covers combat-phase action gating, next-tick scheduling, cooldown enforcement, exposure-side effects, and faction-HP fallback when no targets are exposed.
-- [ ] **`burst` suite**  
-  Status: **Not implemented**.
+- [x] **`burst` suite**  
+  Status: **Implemented** — covers delayed cancel timing, 70% lock threshold behavior, lock-time cancellation rejection, and next-tick execution/reset semantics.
 - [ ] **`damage routing` suite**  
   Status: **Not implemented**.
 - [ ] **`xp/level` suite**  
@@ -43,7 +43,7 @@ Source plan: `engine-test-plan.md`.
 
 Current implementation is **incomplete** relative to the test plan.
 
-- Implemented plan suites: **4 / 11** (`density`, `lobby`, `phase`, `manual attack`).
+- Implemented plan suites: **5 / 11** (`density`, `lobby`, `phase`, `manual attack`, `burst`).
 - Core blockers:
   - Missing 7 planned suites.
   - No server factory refactor for integration-test isolation.
