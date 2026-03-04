@@ -3,7 +3,7 @@ import test from "node:test";
 import { WebSocket } from "ws";
 import { createServer } from "./createServer.js";
 import {
-  LOBBY_LEAVE_SECONDS,
+  ENTRY_HUB_COOLDOWN_SECONDS,
   LOBBY_REJOIN_COOLDOWN_SECONDS,
   MAX_PLAYERS,
 } from "./engine/constants.js";
@@ -60,6 +60,7 @@ test("server protocol: connect/join/state/action/ack/error and malformed message
     assert.equal(ack.action, "request_leave");
     assert.equal(typeof ack.tick, "number");
     assert.equal(ack.lobbyId, "legacy");
+    assert.equal(ack.entryCooldownSeconds, undefined);
 
     sendJson(joinedSocket, { type: "unknown_action" });
     const unknownActionError = await waitForMessageType(joinedSocket, "error");
@@ -190,6 +191,7 @@ test("server protocol: leave_lobby pre-match detaches socket session and allows 
     const leaveAck = await leaveAckPromise;
     assert.equal(leaveAck.action, "leave_lobby");
     assert.equal(leaveAck.lobbyId, createdA.lobbyId);
+    assert.equal(leaveAck.entryCooldownSeconds, ENTRY_HUB_COOLDOWN_SECONDS);
 
     const detachedState = await detachedStatePromise;
     assert.equal(detachedState.lobbyId, "legacy");
@@ -240,7 +242,9 @@ test("server protocol: leave_lobby pre-match preserves binding until delayed lea
     const leaveAckPromise = waitForMessageType(owner, "ack");
     const detachedStatePromise = waitForMessageType(owner, "state");
     sendJson(owner, { type: "leave_lobby" });
-    await leaveAckPromise;
+    const leaveAck = await leaveAckPromise;
+    assert.equal(leaveAck.action, "leave_lobby");
+    assert.equal(leaveAck.entryCooldownSeconds, ENTRY_HUB_COOLDOWN_SECONDS);
     await detachedStatePromise;
 
     const challengerClient = await openSocketWithHandshake(`ws://127.0.0.1:${port}`);
@@ -256,7 +260,7 @@ test("server protocol: leave_lobby pre-match preserves binding until delayed lea
     const stillBound = await waitForMessageType(challenger, "error");
     assert.equal(stillBound.message, "This playerId is already bound to another lobby.");
 
-    for (let tick = 0; tick < LOBBY_LEAVE_SECONDS + LOBBY_REJOIN_COOLDOWN_SECONDS; tick += 1) {
+    for (let tick = 0; tick < ENTRY_HUB_COOLDOWN_SECONDS + LOBBY_REJOIN_COOLDOWN_SECONDS; tick += 1) {
       server.lobbyManager.tickAllLobbies();
     }
 
@@ -329,6 +333,7 @@ test("server protocol: leave_lobby post-start detaches socket while player remai
     const leaveAck = await leaveAckPromise;
     assert.equal(leaveAck.action, "leave_lobby");
     assert.equal(leaveAck.lobbyId, created.lobbyId);
+    assert.equal(leaveAck.entryCooldownSeconds, ENTRY_HUB_COOLDOWN_SECONDS);
 
     const ownerDetached = await ownerDetachedPromise;
     assert.equal(ownerDetached.lobbyId, "legacy");

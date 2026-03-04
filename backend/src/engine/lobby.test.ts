@@ -31,33 +31,38 @@ test("WarEngine lobby: auto-starts at 14 players", () => {
   assert.equal(snapshot.round, 1);
 });
 
-test("WarEngine lobby: delayed leave and rejoin cooldown", () => {
+test("WarEngine lobby: processes leave and applies configured rejoin cooldown", () => {
   const engine = new WarEngine();
   join(engine, "p1");
 
   const leaveResult = engine.requestLobbyLeave("p1");
   assert.equal(leaveResult.ok, true);
 
-  for (let tick = 0; tick < LOBBY_LEAVE_SECONDS; tick += 1) {
+  // Pending leave processing occurs on tick, even when leave delay is configured as 0.
+  for (let tick = 0; tick < Math.max(1, LOBBY_LEAVE_SECONDS); tick += 1) {
     engine.tick();
   }
 
-  let snapshot = engine.getSnapshotForPlayer(null);
+  const snapshot = engine.getSnapshotForPlayer(null);
   assert.equal(snapshot.players.some((player) => player.id === "p1"), false);
 
-  const blocked = engine.addPlayer("p1", "p1");
-  assert.equal(blocked.ok, false);
-  assert.ok((blocked.error ?? "").includes("Rejoin cooldown active"));
+  const firstRejoinAttempt = engine.addPlayer("p1", "p1");
+  if (LOBBY_REJOIN_COOLDOWN_SECONDS > 0) {
+    assert.equal(firstRejoinAttempt.ok, false);
+    assert.ok((firstRejoinAttempt.error ?? "").includes("Rejoin cooldown active"));
 
-  for (let tick = 0; tick < LOBBY_REJOIN_COOLDOWN_SECONDS; tick += 1) {
-    engine.tick();
+    for (let tick = 0; tick < LOBBY_REJOIN_COOLDOWN_SECONDS; tick += 1) {
+      engine.tick();
+    }
+
+    const allowed = engine.addPlayer("p1", "p1");
+    assert.equal(allowed.ok, true);
+  } else {
+    assert.equal(firstRejoinAttempt.ok, true);
   }
 
-  const allowed = engine.addPlayer("p1", "p1");
-  assert.equal(allowed.ok, true);
-
-  snapshot = engine.getSnapshotForPlayer("p1");
-  assert.equal(snapshot.players.some((player) => player.id === "p1"), true);
+  const rejoinedSnapshot = engine.getSnapshotForPlayer("p1");
+  assert.equal(rejoinedSnapshot.players.some((player) => player.id === "p1"), true);
 });
 
 test("WarEngine lobby: rejects joins after match start", () => {

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import { LobbyManager, LEGACY_LOBBY_ID } from "./lobbyManager.js";
+import { ENTRY_HUB_COOLDOWN_SECONDS } from "./engine/constants.js";
 
 /** Per-socket binding to a lobby/player after successful join. */
 type Session = {
@@ -295,7 +296,12 @@ export function createServer(options: CreateServerOptions = {}): BannerfallServe
         session.playerId = null;
         session.lobbyId = LEGACY_LOBBY_ID;
 
-        send(ws, "ack", { action: type, tick: lobby.engine.getCurrentTick(), lobbyId: previousLobbyId });
+        send(ws, "ack", {
+          action: type,
+          tick: lobby.engine.getCurrentTick(),
+          lobbyId: previousLobbyId,
+          entryCooldownSeconds: ENTRY_HUB_COOLDOWN_SECONDS,
+        });
         sendState(ws, session);
         broadcastLobbySnapshots(previousLobbyId);
         return;

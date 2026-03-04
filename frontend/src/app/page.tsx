@@ -1,24 +1,57 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 
 const LOCAL_ID_KEY = "bannerfall.player.id";
 const LOCAL_NAME_KEY = "bannerfall.player.displayName";
 const DEFAULT_WS_PORT = 8080;
 const MAX_FEED_ITEMS = 60;
 const MAX_SEEN_EVENT_KEYS = 240;
-const NOTICE_AUTO_CLEAR_MS = 1800;
+const NOTICE_AUTO_CLEAR_MS = 1000;
 const ACK_RESET_MS = 1400;
-const RECONNECT_BASE_DELAY_MS = 500;
-const RECONNECT_MAX_DELAY_MS = 5_000;
+const RECONNECT_BASE_DELAY_MS = 0;
+const RECONNECT_MAX_DELAY_MS = 0;
 const TARGET_LOBBY_SIZE = parsePositiveEnvInt(process.env.NEXT_PUBLIC_TARGET_LOBBY_SIZE, 14);
+const LEGACY_LOBBY_ID = "legacy";
+const LEGACY_JOIN_CODE = "LEGACY";
 
-const ACTION_TYPES = ["request_leave", "cancel_leave", "manual_attack", "burst_commit", "burst_cancel"] as const;
+const ACTION_TYPES = [
+  "request_leave",
+  "cancel_leave",
+  "manual_attack",
+  "burst_commit",
+  "burst_cancel",
+  "leave_lobby",
+] as const;
 
 type ActionType = (typeof ACTION_TYPES)[number];
 type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "disconnected";
 type ActionLifecycle = "idle" | "sending" | "acked" | "error";
 type FeedChannel = "combat" | "system" | "error";
+type AppScreen =
+  | "bootstrapping_identity"
+  | "socket_connecting"
+  | "entry_hub"
+  | "joining_lobby"
+  | "war_room_pre_match"
+  | "live_match"
+  | "match_summary";
+type JoinErrorCategory =
+  | "invalid_code"
+  | "lobby_full"
+  | "bound_elsewhere"
+  | "rejoin_cooldown"
+  | "match_started"
+  | "generic";
+type EntryAction = "quick_play" | "create_lobby" | "join_code";
 
 type Identity = {
   id: string;
@@ -72,9 +105,11 @@ type Snapshot = {
 
 type WsEnvelope =
   | { type: "connected"; tickSeconds: number }
+  | { type: "lobby_created"; lobbyId: string; joinCode: string }
+  | { type: "lobby_joined"; lobbyId: string; joinCode: string; playerId: string; factionId: number; name: string }
   | { type: "joined"; playerId: string; factionId: number; name: string }
-  | { type: "state"; snapshot: Snapshot }
-  | { type: "ack"; action: string; tick: number }
+  | { type: "state"; lobbyId: string; joinCode: string; snapshot: Snapshot }
+  | { type: "ack"; action: string; tick: number; lobbyId?: string; entryCooldownSeconds?: number }
   | { type: "error"; message: string }
   | { type: string; [key: string]: unknown };
 
@@ -107,9 +142,14 @@ type SessionInfo = {
   name: string;
 };
 
-type MatchView = "war_room" | "live_combat" | "match_summary";
+type JoinIntent =
+  | { kind: "quick_play" }
+  | { kind: "create_lobby" }
+  | { kind: "join_code"; joinCode: string }
+  | { kind: "resume_lobby"; lobbyId: string; joinCode: string | null };
 
 type ClientState = {
+  screen: AppScreen;
   status: ConnectionStatus;
   reconnectAttempt: number;
   tickSeconds: number;
@@ -121,22 +161,47 @@ type ClientState = {
   actionStates: ActionStateMap;
   notice: Notice | null;
   nextNoticeId: number;
+  currentLobbyId: string | null;
+  currentJoinCode: string | null;
+  joinIntent: JoinIntent | null;
+  pendingEntryAction: EntryAction | null;
+  entryCooldownEndsAtMs: number | null;
+  lastJoinError: { category: JoinErrorCategory; message: string } | null;
+  detachedFromLobbyId: string | null;
+  pendingDetachedLobbyId: string | null;
+  identityResetRequired: boolean;
+  lastMatchEndReason: string | null;
 };
 
 type ClientAction =
+  | { type: "identity_ready" }
   | { type: "socket_connecting"; attempt: number }
   | { type: "socket_connected"; tickSeconds: number }
   | { type: "socket_disconnected"; message: string }
   | { type: "socket_reconnecting"; attempt: number }
+  | { type: "entry_join_requested"; intent: JoinIntent; entryAction: EntryAction }
+  | { type: "incoming_lobby_created"; lobbyId: string; joinCode: string }
+  | { type: "incoming_lobby_joined"; lobbyId: string; joinCode: string; playerId: string; factionId: number; name: string }
   | { type: "incoming_joined"; playerId: string; factionId: number; name: string }
-  | { type: "incoming_state"; snapshot: Snapshot }
-  | { type: "incoming_ack"; action: string; tick: number }
+  | { type: "incoming_state"; lobbyId: string; joinCode: string; snapshot: Snapshot }
+  | {
+      type: "incoming_ack";
+      action: string;
+      tick: number;
+      lobbyId: string | null;
+      entryCooldownSeconds: number | null;
+    }
   | { type: "incoming_error"; message: string }
   | { type: "action_sent"; actionType: ActionType }
   | { type: "clear_notice"; id: number }
-  | { type: "clear_action_feedback"; actionType: ActionType };
+  | { type: "clear_action_feedback"; actionType: ActionType }
+  | { type: "clear_detached_notice" }
+  | { type: "clear_join_error" }
+  | { type: "go_entry" }
+  | { type: "identity_rotated"; identity: Identity };
 
 const initialClientState: ClientState = {
+  screen: "bootstrapping_identity",
   status: "connecting",
   reconnectAttempt: 0,
   tickSeconds: 1,
@@ -148,23 +213,52 @@ const initialClientState: ClientState = {
   actionStates: createInitialActionStates(),
   notice: null,
   nextNoticeId: 1,
+  currentLobbyId: null,
+  currentJoinCode: null,
+  joinIntent: null,
+  pendingEntryAction: null,
+  entryCooldownEndsAtMs: null,
+  lastJoinError: null,
+  detachedFromLobbyId: null,
+  pendingDetachedLobbyId: null,
+  identityResetRequired: false,
+  lastMatchEndReason: null,
 };
 
 function clientReducer(state: ClientState, action: ClientAction): ClientState {
+  if (action.type === "identity_ready") {
+    if (state.screen !== "bootstrapping_identity") {
+      return state;
+    }
+
+    return {
+      ...state,
+      screen: "socket_connecting",
+    };
+  }
+
   if (action.type === "socket_connecting") {
     return {
       ...state,
       status: action.attempt > 0 ? "reconnecting" : "connecting",
       reconnectAttempt: action.attempt,
+      screen: state.screen === "bootstrapping_identity" ? "socket_connecting" : state.screen,
     };
   }
 
   if (action.type === "socket_connected") {
+    const shouldShowEntry =
+      state.screen === "socket_connecting" &&
+      !state.joinIntent &&
+      !state.session &&
+      !state.pendingEntryAction;
+
     return {
       ...state,
       status: "connected",
       reconnectAttempt: 0,
       tickSeconds: action.tickSeconds,
+      screen: shouldShowEntry ? "entry_hub" : state.screen,
     };
   }
 
@@ -206,21 +300,90 @@ function clientReducer(state: ClientState, action: ClientAction): ClientState {
     };
   }
 
-  if (action.type === "incoming_joined") {
+  if (action.type === "entry_join_requested") {
+    return {
+      ...state,
+      screen: "joining_lobby",
+      pendingEntryAction: action.entryAction,
+      joinIntent: action.intent,
+      lastJoinError: null,
+      identityResetRequired: false,
+      detachedFromLobbyId: null,
+    };
+  }
+
+  if (action.type === "incoming_lobby_created") {
+    return {
+      ...state,
+      currentLobbyId: action.lobbyId,
+      currentJoinCode: action.joinCode,
+      feed: pushFeedItem(state.feed, {
+        key: `lobby-created-${action.lobbyId}`,
+        channel: "system",
+        message: `Lobby created (${action.joinCode}). Joining...`,
+        tick: state.snapshot?.tick ?? null,
+        eventType: "lobby_created",
+      }),
+    };
+  }
+
+  if (action.type === "incoming_lobby_joined") {
     const joinedFeed = pushFeedItem(state.feed, {
-      key: `joined-${action.playerId}-${state.nextNoticeId}`,
+      key: `lobby-joined-${action.playerId}-${action.lobbyId}`,
       channel: "system",
-      message: `Joined faction ${factionLabel(action.factionId)} as ${action.name}.`,
+      message: `Joined lobby ${action.joinCode} as ${action.name} (${factionLabel(action.factionId)}).`,
       tick: state.snapshot?.tick ?? null,
-      eventType: "joined",
+      eventType: "lobby_joined",
     });
 
     return {
       ...state,
+      screen: "war_room_pre_match",
       session: {
         playerId: action.playerId,
         factionId: action.factionId,
         name: action.name,
+      },
+      currentLobbyId: action.lobbyId,
+      currentJoinCode: action.joinCode,
+      pendingEntryAction: null,
+      lastJoinError: null,
+      identityResetRequired: false,
+      joinIntent: {
+        kind: "resume_lobby",
+        lobbyId: action.lobbyId,
+        joinCode: action.joinCode,
+      },
+      feed: joinedFeed,
+    };
+  }
+  if (action.type === "incoming_joined") {
+    const joinedFeed = pushFeedItem(state.feed, {
+      key: `joined-${action.playerId}-${state.nextNoticeId}`,
+      channel: "system",
+      message: `Joined as ${action.name} (${factionLabel(action.factionId)}).`,
+      tick: state.snapshot?.tick ?? null,
+      eventType: "joined",
+    });
+
+    const lobbyId = state.currentLobbyId ?? LEGACY_LOBBY_ID;
+    const joinCode = state.currentJoinCode ?? LEGACY_JOIN_CODE;
+
+    return {
+      ...state,
+      screen: "war_room_pre_match",
+      session: {
+        playerId: action.playerId,
+        factionId: action.factionId,
+        name: action.name,
+      },
+      currentLobbyId: lobbyId,
+      currentJoinCode: joinCode,
+      pendingEntryAction: null,
+      joinIntent: {
+        kind: "resume_lobby",
+        lobbyId,
+        joinCode,
       },
       feed: joinedFeed,
     };
@@ -229,6 +392,7 @@ function clientReducer(state: ClientState, action: ClientAction): ClientState {
   if (action.type === "incoming_state") {
     const nextFeed = [...state.feed];
     const nextSeenEventKeys = [...state.seenEventKeys];
+    let nextMatchEndReason = state.lastMatchEndReason;
 
     for (const event of action.snapshot.events) {
       const key = buildEventKey(event);
@@ -244,13 +408,86 @@ function clientReducer(state: ClientState, action: ClientAction): ClientState {
         tick: event.tick,
         eventType: event.type,
       });
+
+      if (event.type === "match_ended") {
+        const reason = extractMatchEndReason(event.payload);
+        if (reason) {
+          nextMatchEndReason = reason;
+        }
+      }
+    }
+
+    if (!action.snapshot.ended && action.snapshot.started) {
+      nextMatchEndReason = null;
+    }
+
+    const selfPlayerId = action.snapshot.selfPlayerId;
+    const snapshotPlayer =
+      selfPlayerId !== null ? action.snapshot.players.find((player) => player.id === selfPlayerId) ?? null : null;
+
+    const nextSession =
+      snapshotPlayer !== null
+        ? {
+            playerId: snapshotPlayer.id,
+            factionId: snapshotPlayer.factionId,
+            name: snapshotPlayer.name,
+          }
+        : null;
+
+    const detachedByLeaveAck =
+      state.pendingDetachedLobbyId !== null &&
+      action.lobbyId === LEGACY_LOBBY_ID &&
+      action.snapshot.selfPlayerId === null;
+
+    if (detachedByLeaveAck) {
+      return {
+        ...state,
+        screen: "entry_hub",
+        snapshot: action.snapshot,
+        currentLobbyId: action.lobbyId,
+        currentJoinCode: action.joinCode,
+        session: null,
+        joinIntent: null,
+        pendingEntryAction: null,
+        pendingDetachedLobbyId: null,
+        detachedFromLobbyId: state.pendingDetachedLobbyId,
+        feed: nextFeed.slice(0, MAX_FEED_ITEMS),
+        seenEventKeys: nextSeenEventKeys.slice(0, MAX_SEEN_EVENT_KEYS),
+        lastMatchEndReason: nextMatchEndReason,
+      };
+    }
+
+    let nextScreen: AppScreen;
+    if (action.snapshot.ended) {
+      nextScreen = "match_summary";
+    } else if (action.snapshot.started) {
+      nextScreen = "live_match";
+    } else if (action.snapshot.selfPlayerId !== null) {
+      nextScreen = "war_room_pre_match";
+    } else if (state.pendingEntryAction) {
+      nextScreen = "joining_lobby";
+    } else {
+      nextScreen = "entry_hub";
     }
 
     return {
       ...state,
+      screen: nextScreen,
       snapshot: action.snapshot,
+      currentLobbyId: action.lobbyId,
+      currentJoinCode: action.joinCode,
+      session: nextSession,
+      joinIntent:
+        action.snapshot.selfPlayerId !== null
+          ? {
+              kind: "resume_lobby",
+              lobbyId: action.lobbyId,
+              joinCode: action.joinCode,
+            }
+          : state.joinIntent,
       feed: nextFeed.slice(0, MAX_FEED_ITEMS),
       seenEventKeys: nextSeenEventKeys.slice(0, MAX_SEEN_EVENT_KEYS),
+      lastMatchEndReason: nextMatchEndReason,
     };
   }
 
@@ -261,6 +498,16 @@ function clientReducer(state: ClientState, action: ClientAction): ClientState {
 
     const ackedLabel = actionLabel(action.action);
     const shouldShowAckNotice = action.action !== "manual_attack" && action.action !== "burst_commit";
+    const normalizedEntryCooldownSeconds =
+      typeof action.entryCooldownSeconds === "number" &&
+      Number.isFinite(action.entryCooldownSeconds) &&
+      action.entryCooldownSeconds > 0
+        ? Math.ceil(action.entryCooldownSeconds)
+        : null;
+    const nextEntryCooldownEndsAtMs =
+      action.action === "leave_lobby" && normalizedEntryCooldownSeconds !== null
+        ? Date.now() + normalizedEntryCooldownSeconds * 1000
+        : state.entryCooldownEndsAtMs;
 
     return {
       ...state,
@@ -273,6 +520,9 @@ function clientReducer(state: ClientState, action: ClientAction): ClientState {
           tick: action.tick,
         },
       },
+      pendingDetachedLobbyId:
+        action.action === "leave_lobby" ? action.lobbyId ?? state.currentLobbyId : state.pendingDetachedLobbyId,
+      entryCooldownEndsAtMs: nextEntryCooldownEndsAtMs,
       notice: shouldShowAckNotice
         ? {
             id: state.nextNoticeId,
@@ -302,10 +552,17 @@ function clientReducer(state: ClientState, action: ClientAction): ClientState {
       };
     }
 
+    const isJoinError = state.pendingEntryAction !== null || state.screen === "joining_lobby";
+    const joinCategory = classifyJoinError(action.message);
+
     return {
       ...state,
+      screen: isJoinError ? "entry_hub" : state.screen,
+      pendingEntryAction: isJoinError ? null : state.pendingEntryAction,
       pendingAction: null,
       actionStates: nextActionStates,
+      lastJoinError: isJoinError ? { category: joinCategory, message: action.message } : state.lastJoinError,
+      identityResetRequired: isJoinError ? shouldOfferIdentityReset(joinCategory) : state.identityResetRequired,
       notice: {
         id: state.nextNoticeId,
         kind: "error",
@@ -349,45 +606,93 @@ function clientReducer(state: ClientState, action: ClientAction): ClientState {
     };
   }
 
-  const entry = state.actionStates[action.actionType];
-  if (entry.status !== "acked") {
-    return state;
+  if (action.type === "clear_action_feedback") {
+    const entry = state.actionStates[action.actionType];
+    if (entry.status !== "acked") {
+      return state;
+    }
+
+    return {
+      ...state,
+      actionStates: {
+        ...state.actionStates,
+        [action.actionType]: {
+          status: "idle",
+          message: null,
+          tick: null,
+        },
+      },
+    };
   }
 
-  return {
-    ...state,
-    actionStates: {
-      ...state.actionStates,
-      [action.actionType]: {
-        status: "idle",
-        message: null,
-        tick: null,
+  if (action.type === "clear_detached_notice") {
+    return {
+      ...state,
+      detachedFromLobbyId: null,
+    };
+  }
+
+  if (action.type === "clear_join_error") {
+    return {
+      ...state,
+      lastJoinError: null,
+    };
+  }
+
+  if (action.type === "go_entry") {
+    return {
+      ...state,
+      screen: "entry_hub",
+      pendingEntryAction: null,
+      pendingDetachedLobbyId: null,
+      detachedFromLobbyId: null,
+      lastJoinError: null,
+      identityResetRequired: false,
+    };
+  }
+
+  if (action.type === "identity_rotated") {
+    return {
+      ...state,
+      lastJoinError: null,
+      identityResetRequired: false,
+      notice: {
+        id: state.nextNoticeId,
+        kind: "info",
+        message: `Using new pilot ID: ${action.identity.displayName}`,
+        sticky: false,
       },
-    },
-  };
+      nextNoticeId: state.nextNoticeId + 1,
+    };
+  }
+
+  return state;
 }
 
 export default function Home() {
-  const [identity] = useState<Identity | null>(() => bootstrapIdentity());
-  const [isFeedExpanded, setIsFeedExpanded] = useState(false);
-  const { state: clientState, sendAction } = useMatchClient(identity);
+  const [identity, setIdentity] = useState<Identity | null>(null);
+
+  useEffect(() => {
+    setIdentity(bootstrapIdentity());
+  }, []);
+
+  const {
+    state: clientState,
+    sendMatchAction,
+    quickPlay,
+    createLobby,
+    joinLobbyByCode,
+    leaveLobby,
+    backToEntry,
+    useNewPilotId,
+    dismissDetachedNotice,
+    dismissJoinError,
+  } = useMatchClient(identity, (nextIdentity) => setIdentity(nextIdentity));
 
   const snapshot = clientState.snapshot;
-
-  const view: MatchView = useMemo(() => {
-    if (snapshot?.ended) {
-      return "match_summary";
-    }
-
-    if (snapshot?.started) {
-      return "live_combat";
-    }
-
-    return "war_room";
-  }, [snapshot]);
+  const displayName = identity?.displayName ?? clientState.session?.name ?? "Loading";
 
   const effectivePlayerId = snapshot?.selfPlayerId ?? clientState.session?.playerId ?? null;
-
   const selfPlayer = useMemo(() => {
     if (!snapshot || !effectivePlayerId) {
       return null;
@@ -396,7 +701,8 @@ export default function Home() {
     return snapshot.players.find((player) => player.id === effectivePlayerId) ?? null;
   }, [snapshot, effectivePlayerId]);
 
-  const selfFactionId = snapshot?.selfFactionId ?? selfPlayer?.factionId ?? clientState.session?.factionId ?? null;
+  const selfFactionId =
+    snapshot?.selfFactionId ?? selfPlayer?.factionId ?? clientState.session?.factionId ?? null;
   const myFaction = useMemo(() => {
     if (!snapshot || selfFactionId === null) {
       return null;
@@ -416,8 +722,10 @@ export default function Home() {
     100,
     Math.round((Math.max(lobbyPlayerCount, 0) / Math.max(TARGET_LOBBY_SIZE, 1)) * 100),
   );
-  const topProgressPercent = view === "war_room" ? lobbyProgressPercent : phaseProgressPercent;
-
+  const topProgressPercent =
+    clientState.screen === "entry_hub" || clientState.screen === "joining_lobby"
+      ? lobbyProgressPercent
+      : phaseProgressPercent;
   const factionHealth = useMemo(() => {
     if (!snapshot) {
       return [
@@ -473,17 +781,20 @@ export default function Home() {
     };
   }, [snapshot, selfPlayer]);
 
-  const displayName = clientState.session?.name ?? identity?.displayName ?? "Loading";
-
   const attackBlockReason = getManualAttackBlockReason(clientState.status, snapshot, selfPlayer);
   const burstActionType: ActionType = selfPlayer?.isCommittedToBurst ? "burst_cancel" : "burst_commit";
-  const burstBlockReason = getBurstActionBlockReason(clientState.status, snapshot, selfPlayer, myFaction, burstActionType);
+  const burstBlockReason = getBurstActionBlockReason(
+    clientState.status,
+    snapshot,
+    selfPlayer,
+    myFaction,
+    burstActionType,
+  );
 
   const combatFeed = clientState.feed.filter((item) => item.channel === "combat");
   const systemFeed = clientState.feed.filter((item) => item.channel !== "combat");
-
-  const reconnectBannerNeeded =
-    clientState.status === "disconnected" || clientState.status === "reconnecting" || clientState.status === "connecting";
+  const reconnectBannerNeeded = clientState.status !== "connected";
+  const entryCooldownRemainingSeconds = useEntryCooldownRemainingSeconds(clientState.entryCooldownEndsAtMs);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -491,7 +802,7 @@ export default function Home() {
         <StatusStrip
           connectionStatus={clientState.status}
           reconnectAttempt={clientState.reconnectAttempt}
-          view={view}
+          screen={clientState.screen}
           phase={phase}
           round={round}
           totalRounds={totalRounds}
@@ -501,63 +812,105 @@ export default function Home() {
           targetLobbySize={TARGET_LOBBY_SIZE}
           factions={factionHealth}
           selfFactionId={selfFactionId}
-          actionStates={clientState.actionStates}
-          onAction={sendAction}
+          currentLobbyId={clientState.currentLobbyId}
+          currentJoinCode={clientState.currentJoinCode}
         />
 
         {reconnectBannerNeeded ? (
           <div className="mt-3 rounded-xl border border-amber-500/40 bg-amber-900/20 px-4 py-3 text-sm text-amber-100">
-            {clientState.status === "connected"
-              ? ""
-              : clientState.status === "connecting"
-                ? "Connecting to match server..."
-                : clientState.status === "reconnecting"
-                  ? `Reconnecting (attempt ${Math.max(1, clientState.reconnectAttempt)})... Actions are temporarily unavailable.`
-                  : "Connection lost. Waiting to reconnect..."}
+            {clientState.status === "connecting"
+              ? "Connecting to match server..."
+              : clientState.status === "reconnecting"
+                ? `Reconnecting (attempt ${Math.max(1, clientState.reconnectAttempt)})... Actions are temporarily unavailable.`
+                : "Connection lost. Waiting to reconnect..."}
           </div>
         ) : null}
 
         {clientState.notice ? <NoticeBanner notice={clientState.notice} /> : null}
 
+        {/* {clientState.detachedFromLobbyId ? (
+          <InlineInfoBanner
+            message={buildDetachedNoticeMessage(clientState.detachedFromLobbyId)}
+            onDismiss={dismissDetachedNotice}
+          />
+        ) : null} */}
+
         <div
           className={`mt-4 grid gap-4 ${
-            view === "war_room" ? "" : "md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] md:items-start"
+            clientState.screen === "live_match" || clientState.screen === "match_summary"
+              ? "md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] md:items-start"
+              : ""
           }`}
         >
-          {view !== "war_room" ? (
-            <section className="space-y-4">
-            {view === "live_combat" ? (
-              <CombatView
-                selfPlayer={selfPlayer}
-                factions={factionHealth}
+          <section className="space-y-4">
+            {clientState.screen === "bootstrapping_identity" || clientState.screen === "socket_connecting" ? (
+              <Panel title="Loading Pilot" subtitle="Preparing identity and websocket session.">
+                <p className="text-sm text-slate-300">Initializing local pilot profile...</p>
+              </Panel>
+            ) : null}
+
+            {clientState.screen === "entry_hub" || clientState.screen === "joining_lobby" ? (
+              <EntryHub
+                connectionStatus={clientState.status}
+                currentJoinCode={clientState.currentJoinCode}
+                pendingEntryAction={clientState.pendingEntryAction}
+                entryCooldownRemainingSeconds={entryCooldownRemainingSeconds}
+                joinError={clientState.lastJoinError}
+                identityResetRequired={clientState.identityResetRequired}
+                onQuickPlay={quickPlay}
+                onCreateLobby={createLobby}
+                onJoinByCode={joinLobbyByCode}
+                onUseNewPilotId={useNewPilotId}
+                onDismissJoinError={dismissJoinError}
               />
             ) : null}
 
-            {view === "match_summary" ? (
-              <SummaryView summary={summary} connectionStatus={clientState.status} round={round} totalRounds={totalRounds} />
+            {clientState.screen === "war_room_pre_match" ? (
+              <WarRoomView
+                snapshot={snapshot}
+                currentLobbyId={clientState.currentLobbyId}
+                currentJoinCode={clientState.currentJoinCode}
+                selfFactionId={selfFactionId}
+                factions={factionHealth}
+                connectionStatus={clientState.status}
+                actionStates={clientState.actionStates}
+                onAction={sendMatchAction}
+                onLeaveLobby={leaveLobby}
+              />
             ) : null}
-            </section>
-          ) : null}
 
-          <section className="space-y-4">
-            <EventFeed
-              combatFeed={combatFeed}
-              systemFeed={systemFeed}
-              expanded={isFeedExpanded}
-              onToggleExpanded={() => setIsFeedExpanded((previous) => !previous)}
-            />
+            {clientState.screen === "live_match" ? (
+              <CombatView selfPlayer={selfPlayer} myFaction={myFaction} factions={factionHealth} onLeaveLobby={leaveLobby} />
+            ) : null}
+
+            {clientState.screen === "match_summary" ? (
+              <SummaryView
+                summary={summary}
+                connectionStatus={clientState.status}
+                round={round}
+                totalRounds={totalRounds}
+                reason={clientState.lastMatchEndReason}
+                onBackToEntry={backToEntry}
+                onUseNewPilotId={useNewPilotId}
+              />
+            ) : null}
           </section>
+
+          {/* TODO: Only show event feed when already in a lobby. Clear the feed upon joining a new lobby. */}
+          {/* <section className="space-y-4">
+            <EventFeed combatFeed={combatFeed} systemFeed={systemFeed} />
+          </section> */}
         </div>
 
-        {view === "live_combat" ? (
+        {clientState.screen === "live_match" ? (
           <ActionBar
             attackState={clientState.actionStates.manual_attack}
             burstState={clientState.actionStates[burstActionType]}
             burstActionType={burstActionType}
             attackBlockReason={attackBlockReason}
             burstBlockReason={burstBlockReason}
-            onAttack={() => sendAction("manual_attack")}
-            onBurst={() => sendAction(burstActionType)}
+            onAttack={() => sendMatchAction("manual_attack")}
+            onBurst={() => sendMatchAction(burstActionType)}
           />
         ) : null}
       </main>
@@ -565,11 +918,24 @@ export default function Home() {
   );
 }
 
-function useMatchClient(identity: Identity | null) {
+function useMatchClient(identity: Identity | null, setIdentity: (identity: Identity) => void) {
   const [state, dispatch] = useReducer(clientReducer, initialClientState);
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<number | null>(null);
   const reconnectAttemptRef = useRef(0);
+  const stateRef = useRef(state);
+  const identityRef = useRef(identity);
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  useEffect(() => {
+    identityRef.current = identity;
+    if (identity) {
+      dispatch({ type: "identity_ready" });
+    }
+  }, [identity]);
 
   useEffect(() => {
     if (!identity) {
@@ -583,6 +949,25 @@ function useMatchClient(identity: Identity | null) {
         window.clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = null;
       }
+    };
+
+    const requestJoinIntent = (socket: WebSocket, intent: JoinIntent, nextIdentity: Identity) => {
+      dispatch({
+        type: "entry_join_requested",
+        intent,
+        entryAction: entryActionFromIntent(intent),
+      });
+      sendJoinIntentMessage(socket, intent, nextIdentity);
+    };
+
+    const replayJoinIntent = (socket: WebSocket) => {
+      const currentState = stateRef.current;
+      const nextIdentity = identityRef.current;
+      if (!nextIdentity || !currentState.joinIntent) {
+        return;
+      }
+
+      requestJoinIntent(socket, currentState.joinIntent, nextIdentity);
     };
 
     const scheduleReconnect = () => {
@@ -633,7 +1018,49 @@ function useMatchClient(identity: Identity | null) {
 
         if (parsed.type === "connected" && typeof parsed.tickSeconds === "number") {
           dispatch({ type: "socket_connected", tickSeconds: parsed.tickSeconds });
-          socket.send(JSON.stringify({ type: "join", playerId: identity.id, name: identity.displayName }));
+          replayJoinIntent(socket);
+          return;
+        }
+
+        if (
+          parsed.type === "lobby_created" &&
+          typeof parsed.lobbyId === "string" &&
+          typeof parsed.joinCode === "string"
+        ) {
+          dispatch({
+            type: "incoming_lobby_created",
+            lobbyId: parsed.lobbyId,
+            joinCode: parsed.joinCode,
+          });
+
+          const currentState = stateRef.current;
+          const nextIdentity = identityRef.current;
+          if (currentState.joinIntent?.kind === "create_lobby" && nextIdentity) {
+            sendJoinIntentMessage(
+              socket,
+              { kind: "join_code", joinCode: parsed.joinCode },
+              nextIdentity,
+            );
+          }
+          return;
+        }
+
+        if (
+          parsed.type === "lobby_joined" &&
+          typeof parsed.lobbyId === "string" &&
+          typeof parsed.joinCode === "string" &&
+          typeof parsed.playerId === "string" &&
+          typeof parsed.factionId === "number" &&
+          typeof parsed.name === "string"
+        ) {
+          dispatch({
+            type: "incoming_lobby_joined",
+            lobbyId: parsed.lobbyId,
+            joinCode: parsed.joinCode,
+            playerId: parsed.playerId,
+            factionId: parsed.factionId,
+            name: parsed.name,
+          });
           return;
         }
 
@@ -652,13 +1079,31 @@ function useMatchClient(identity: Identity | null) {
           return;
         }
 
-        if (parsed.type === "state" && parsed.snapshot && typeof parsed.snapshot === "object") {
-          dispatch({ type: "incoming_state", snapshot: parsed.snapshot as Snapshot });
+        if (
+          parsed.type === "state" &&
+          parsed.snapshot &&
+          typeof parsed.snapshot === "object" &&
+          typeof parsed.lobbyId === "string" &&
+          typeof parsed.joinCode === "string"
+        ) {
+          dispatch({
+            type: "incoming_state",
+            lobbyId: parsed.lobbyId,
+            joinCode: parsed.joinCode,
+            snapshot: parsed.snapshot as Snapshot,
+          });
           return;
         }
 
         if (parsed.type === "ack" && typeof parsed.action === "string" && typeof parsed.tick === "number") {
-          dispatch({ type: "incoming_ack", action: parsed.action, tick: parsed.tick });
+          dispatch({
+            type: "incoming_ack",
+            action: parsed.action,
+            tick: parsed.tick,
+            lobbyId: typeof parsed.lobbyId === "string" ? parsed.lobbyId : null,
+            entryCooldownSeconds:
+              typeof parsed.entryCooldownSeconds === "number" ? parsed.entryCooldownSeconds : null,
+          });
           return;
         }
 
@@ -735,7 +1180,6 @@ function useMatchClient(identity: Identity | null) {
 
   useEffect(() => {
     const timers: number[] = [];
-
     for (const actionType of ACTION_TYPES) {
       if (state.actionStates[actionType].status !== "acked") {
         continue;
@@ -755,43 +1199,141 @@ function useMatchClient(identity: Identity | null) {
     };
   }, [state.actionStates]);
 
-  useEffect(() => {
-    if (!state.session || typeof window === "undefined") {
+  const sendMatchAction = useCallback((actionType: ActionType) => {
+    const currentState = stateRef.current;
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      dispatch({ type: "incoming_error", message: "Action failed: websocket is not connected." });
       return;
     }
 
-    localStorage.setItem(LOCAL_ID_KEY, state.session.playerId);
-    localStorage.setItem(LOCAL_NAME_KEY, state.session.name);
-  }, [state.session]);
+    if (currentState.actionStates[actionType].status === "sending") {
+      return;
+    }
 
-  const sendAction = useCallback(
-    (actionType: ActionType) => {
-      const socket = socketRef.current;
-      if (!socket || socket.readyState !== WebSocket.OPEN) {
-        dispatch({ type: "incoming_error", message: "Action failed: websocket is not connected." });
+    dispatch({ type: "action_sent", actionType });
+    socket.send(JSON.stringify({ type: actionType }));
+  }, []);
+
+  const startJoinFlow = useCallback((intent: JoinIntent) => {
+    const socket = socketRef.current;
+    const nextIdentity = identityRef.current;
+    const currentState = stateRef.current;
+
+    const entryCooldownRemainingSeconds = getEntryCooldownRemainingSeconds(currentState.entryCooldownEndsAtMs);
+    if (entryCooldownRemainingSeconds > 0) {
+      return;
+    }
+
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      dispatch({ type: "incoming_error", message: "Join failed: websocket is not connected." });
+      return;
+    }
+
+    if (!nextIdentity) {
+      dispatch({ type: "incoming_error", message: "Join failed: local identity is not ready." });
+      return;
+    }
+
+    dispatch({
+      type: "entry_join_requested",
+      intent,
+      entryAction: entryActionFromIntent(intent),
+    });
+    sendJoinIntentMessage(socket, intent, nextIdentity);
+  }, []);
+
+  const quickPlay = useCallback(() => {
+    startJoinFlow({ kind: "quick_play" });
+  }, [startJoinFlow]);
+
+  const createLobby = useCallback(() => {
+    startJoinFlow({ kind: "create_lobby" });
+  }, [startJoinFlow]);
+
+  const joinLobbyByCode = useCallback(
+    (joinCode: string) => {
+      const normalized = joinCode.trim().toUpperCase();
+      if (!normalized) {
+        dispatch({ type: "incoming_error", message: "Join code is required." });
         return;
       }
 
-      if (state.actionStates[actionType].status === "sending") {
-        return;
-      }
-
-      dispatch({ type: "action_sent", actionType });
-      socket.send(JSON.stringify({ type: actionType }));
+      startJoinFlow({ kind: "join_code", joinCode: normalized });
     },
-    [state.actionStates],
+    [startJoinFlow],
   );
+
+  const leaveLobby = useCallback(() => {
+    sendMatchAction("leave_lobby");
+  }, [sendMatchAction]);
+
+  const backToEntry = useCallback(() => {
+    const currentState = stateRef.current;
+    if (
+      currentState.status === "connected" &&
+      currentState.currentLobbyId &&
+      currentState.session &&
+      currentState.actionStates.leave_lobby.status !== "sending"
+    ) {
+      sendMatchAction("leave_lobby");
+      return;
+    }
+
+    dispatch({ type: "go_entry" });
+  }, [sendMatchAction]);
+
+  const useNewPilotId = useCallback(() => {
+    const nextIdentity: Identity = {
+      id: crypto.randomUUID(),
+      displayName: generateRandomDisplayName(),
+    };
+
+    if (typeof window !== "undefined") {
+      localStorage.setItem(LOCAL_ID_KEY, nextIdentity.id);
+      localStorage.setItem(LOCAL_NAME_KEY, nextIdentity.displayName);
+    }
+
+    identityRef.current = nextIdentity;
+    setIdentity(nextIdentity);
+    dispatch({ type: "identity_rotated", identity: nextIdentity });
+
+    const currentState = stateRef.current;
+    if (!currentState.identityResetRequired || !currentState.joinIntent) {
+      return;
+    }
+
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+
+    dispatch({
+      type: "entry_join_requested",
+      intent: currentState.joinIntent,
+      entryAction: entryActionFromIntent(currentState.joinIntent),
+    });
+    sendJoinIntentMessage(socket, currentState.joinIntent, nextIdentity);
+  }, [setIdentity]);
 
   return {
     state,
-    sendAction,
+    sendMatchAction,
+    quickPlay,
+    createLobby,
+    joinLobbyByCode,
+    leaveLobby,
+    backToEntry,
+    useNewPilotId,
+    dismissDetachedNotice: () => dispatch({ type: "clear_detached_notice" }),
+    dismissJoinError: () => dispatch({ type: "clear_join_error" }),
   };
 }
 
 function StatusStrip({
   connectionStatus,
   reconnectAttempt,
-  view,
+  screen,
   phase,
   round,
   totalRounds,
@@ -801,12 +1343,12 @@ function StatusStrip({
   targetLobbySize,
   factions,
   selfFactionId,
-  actionStates,
-  onAction,
+  currentLobbyId,
+  currentJoinCode,
 }: {
   connectionStatus: ConnectionStatus;
   reconnectAttempt: number;
-  view: MatchView;
+  screen: AppScreen;
   phase: string;
   round: number;
   totalRounds: number;
@@ -816,146 +1358,287 @@ function StatusStrip({
   targetLobbySize: number;
   factions: Array<{ id: number; label: string; playerCount: number; color: string }>;
   selfFactionId: number | null;
-  actionStates: ActionStateMap;
-  onAction: (action: ActionType) => void;
+  currentLobbyId: string | null;
+  currentJoinCode: string | null;
 }) {
   const connectionClass =
     connectionStatus === "connected"
-      ? "border-emerald-500/40 bg-emerald-900/30 text-emerald-100"
+      ? "border-emerald-500/50 bg-emerald-600/20 text-emerald-200"
       : connectionStatus === "reconnecting"
-        ? "border-amber-500/40 bg-amber-900/20 text-amber-100"
+        ? "border-amber-500/50 bg-amber-600/20 text-amber-200"
+        : "border-slate-500/50 bg-slate-600/20 text-slate-200";
+
+  const statusText =
+    connectionStatus === "connected"
+      ? "ONLINE"
+      : connectionStatus === "reconnecting"
+        ? `RETRY ${Math.max(1, reconnectAttempt)}`
         : connectionStatus === "connecting"
-          ? "border-sky-500/40 bg-sky-900/20 text-sky-100"
-          : "border-rose-500/40 bg-rose-900/20 text-rose-100";
+          ? "CONNECTING"
+          : "OFFLINE";
 
-  const connectionLabel =
-    connectionStatus === "reconnecting"
-      ? `reconnecting #${Math.max(1, reconnectAttempt)}`
-      : connectionStatus;
-  const phaseText = formatPhaseLabel(phase);
-  const progressBarClass = phase === "prep" ? "bg-amber-400" : phase === "combat" ? "bg-emerald-400" : "bg-cyan-400";
-
-  const requestLeaveDisabled = connectionStatus !== "connected" || actionStates.request_leave.status === "sending";
-  const cancelLeaveDisabled = connectionStatus !== "connected" || actionStates.cancel_leave.status === "sending";
+  const progressLabel =
+    screen === "entry_hub" || screen === "joining_lobby" || screen === "war_room_pre_match"
+      ? `Lobby Fill ${lobbyPlayerCount}/${targetLobbySize}`
+      : `${formatPhaseLabel(phase)} ${Math.max(round, 0)}/${totalRounds}`;
 
   return (
     <header className="rounded-2xl border border-slate-700/80 bg-slate-900/85 px-4 py-4 shadow-lg shadow-black/25 backdrop-blur">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Bannerfall</p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Bannerfall</p>
+        </div>
+
         <span className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${connectionClass}`}>
-          {connectionLabel}
+          {statusText}
         </span>
       </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-2 text-sm text-slate-300">
-        <div className="rounded-lg border border-slate-700/70 bg-slate-950/60 px-3 py-2">
-          <p className="text-[10px] uppercase tracking-wide text-slate-400">Name</p>
-          <p className="truncate font-semibold text-slate-100">{playerLabel}</p>
-        </div>
-        <div className="rounded-lg border border-slate-700/70 bg-slate-950/60 px-3 py-2">
-          <p className="text-[10px] uppercase tracking-wide text-slate-400">Faction</p>
-          <p className="truncate font-semibold text-slate-100">
-            {selfFactionId === null ? "Awaiting Assignment" : factionLabel(selfFactionId)}
-          </p>
-        </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        <MetricTile label="Player" value={playerLabel} compact />
+        <MetricTile label="Faction" value={selfFactionId === null ? "No Faction" : factionLabel(selfFactionId)} compact />
       </div>
 
-      <div className="mt-3 rounded-lg border border-slate-700/70 bg-slate-950/60 px-3 py-2">
-        <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-300">
-          <p>
-            ROUND {Math.max(round, 1)} / {totalRounds}
-          </p>
-          <p>{phaseText}</p>
-        </div>
-        <div className="h-2.5 w-full rounded-full bg-slate-800">
-          <div className={`h-2.5 rounded-full transition-all duration-500 ${progressBarClass}`} style={{ width: `${progressPercent}%` }} />
-        </div>
-      </div>
-
-      {view === "war_room" ? (
-        <div className="mt-3 rounded-lg border border-slate-700/70 bg-slate-950/60 px-3 py-3">
-          <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-300">
-            <p>
-              <span className="uppercase tracking-wide text-slate-400">Lobby Ready</span>{" "}
-              <span className="font-semibold text-slate-100">
-                {lobbyPlayerCount} / {targetLobbySize}
-              </span>
-            </p>
-            <p>
-              <span className="uppercase tracking-wide text-slate-400">Faction</span>{" "}
-              <span className="font-semibold text-slate-100">
-                {selfFactionId === null ? "Awaiting Assignment" : factionLabel(selfFactionId)}
-              </span>
-            </p>
-          </div>
-          <p className="mt-1 text-xs text-slate-400">War starts when the lobby reaches {targetLobbySize} pilots.</p>
-
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {factions.map((faction) => (
-              <div key={faction.id} className="rounded-lg border border-slate-700/70 bg-slate-950/50 px-3 py-2">
-                <div className="mb-1 flex items-center justify-between text-xs">
-                  <p className="text-slate-300">{faction.label}</p>
-                  <p className="font-semibold text-slate-100">{faction.playerCount}</p>
-                </div>
-                <div className="h-1.5 w-full rounded-full bg-slate-800">
-                  <div
-                    className={`h-1.5 rounded-full ${faction.color}`}
-                    style={{ width: `${Math.min(100, Math.round((faction.playerCount / Math.max(Math.ceil(targetLobbySize / 2), 1)) * 100))}%` }}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            <ActionButton
-              label={actionStates.request_leave.status === "sending" ? "Sending..." : "Request Leave"}
-              disabled={requestLeaveDisabled}
-              tone="neutral"
-              onClick={() => onAction("request_leave")}
-            />
-            <ActionButton
-              label={actionStates.cancel_leave.status === "sending" ? "Sending..." : "Cancel Leave"}
-              disabled={cancelLeaveDisabled}
-              tone="neutral"
-              onClick={() => onAction("cancel_leave")}
-            />
-          </div>
-
-          <div className="mt-2 grid gap-1 text-xs text-slate-400 sm:grid-cols-2">
-            <p>{statusMessage(actionStates.request_leave)}</p>
-            <p>{statusMessage(actionStates.cancel_leave)}</p>
-          </div>
-        </div>
-      ) : null}
     </header>
   );
 }
 
-function NoticeBanner({ notice }: { notice: Notice }) {
-  const className =
-    notice.kind === "success"
-      ? "border-emerald-500/40 bg-emerald-900/25 text-emerald-100"
-      : notice.kind === "error"
-        ? "border-rose-500/40 bg-rose-900/25 text-rose-100"
-        : "border-sky-500/40 bg-sky-900/25 text-sky-100";
+function EntryHub({
+  connectionStatus,
+  currentJoinCode,
+  pendingEntryAction,
+  entryCooldownRemainingSeconds,
+  joinError,
+  identityResetRequired,
+  onQuickPlay,
+  onCreateLobby,
+  onJoinByCode,
+  onUseNewPilotId,
+  onDismissJoinError,
+}: {
+  connectionStatus: ConnectionStatus;
+  currentJoinCode: string | null;
+  pendingEntryAction: EntryAction | null;
+  entryCooldownRemainingSeconds: number;
+  joinError: { category: JoinErrorCategory; message: string } | null;
+  identityResetRequired: boolean;
+  onQuickPlay: () => void;
+  onCreateLobby: () => void;
+  onJoinByCode: (joinCode: string) => void;
+  onUseNewPilotId: () => void;
+  onDismissJoinError: () => void;
+}) {
+  const [joinCodeInput, setJoinCodeInput] = useState("");
+  const isBusy = pendingEntryAction !== null;
+  const isEntryCooldownActive = entryCooldownRemainingSeconds > 0;
+  const blocked = connectionStatus !== "connected" || isBusy || isEntryCooldownActive;
 
-  return <div className={`mt-3 rounded-xl border px-4 py-3 text-sm ${className}`}>{notice.message}</div>;
+  const quickPlayLabel =
+    pendingEntryAction === "quick_play"
+      ? "Joining..."
+      : isEntryCooldownActive
+        ? `Quick Play (${entryCooldownRemainingSeconds}s)`
+        : "Quick Play";
+  const createLobbyLabel =
+    pendingEntryAction === "create_lobby"
+      ? "Creating..."
+      : isEntryCooldownActive
+        ? `Create Lobby (${entryCooldownRemainingSeconds}s)`
+        : "Create Lobby";
+  const joinLabel =
+    pendingEntryAction === "join_code"
+      ? "Joining..."
+      : isEntryCooldownActive
+        ? `Join (${entryCooldownRemainingSeconds}s)`
+        : "Join";
+
+  return (
+    <Panel title="Entry Hub" subtitle="Start a war room by quick play, create, or join code.">
+      {/* {currentJoinCode ? (
+        <div className="mb-3 rounded-lg border border-cyan-500/30 bg-cyan-900/20 px-3 py-2 text-xs text-cyan-100">
+          Last lobby code: <span className="font-semibold">{currentJoinCode}</span>
+        </div>
+      ) : null} */}
+
+      {joinError ? (
+        <div className="mb-3 rounded-lg border border-rose-500/40 bg-rose-900/20 px-3 py-3 text-sm text-rose-100">
+          <p className="font-semibold">{joinErrorTitle(joinError.category)}</p>
+          <p className="mt-1">{joinError.message}</p>
+          <p className="mt-1 text-xs text-rose-200">{joinErrorHint(joinError.category)}</p>
+          <button
+            type="button"
+            onClick={onDismissJoinError}
+            className="mt-2 rounded-md border border-rose-400/50 px-2 py-1 text-xs font-semibold uppercase tracking-wide"
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
+
+      <div className="grid gap-2 sm:grid-cols-2">
+        <ActionButton
+          label={quickPlayLabel}
+          disabled={blocked}
+          tone="attack"
+          onClick={onQuickPlay}
+        />
+        <ActionButton
+          label={createLobbyLabel}
+          disabled={blocked}
+          tone="burst"
+          onClick={onCreateLobby}
+        />
+      </div>
+
+      <div className="mt-3 rounded-xl border border-slate-700/80 bg-slate-950/50 p-3">
+        <p className="text-xs uppercase tracking-wide text-slate-400">Join by Code</p>
+        <div className="mt-2 flex gap-2">
+          <input
+            value={joinCodeInput}
+            onChange={(event) => setJoinCodeInput(event.target.value.toUpperCase())}
+            placeholder="ABC123"
+            maxLength={8}
+            className="w-full rounded-lg border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-500"
+          />
+          <button
+            type="button"
+            onClick={() => onJoinByCode(joinCodeInput)}
+            disabled={blocked || joinCodeInput.trim().length === 0}
+            className="rounded-lg border border-slate-500/60 bg-slate-700/30 px-3 py-2 text-sm font-semibold transition hover:bg-slate-600/40 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {joinLabel}
+          </button>
+        </div>
+      </div>
+
+      {/* {identityResetRequired ? (
+        <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-900/20 px-3 py-3 text-sm text-amber-100">
+          <p>Current pilot ID is blocked by lobby binding/cooldown.</p>
+          <button
+            type="button"
+            onClick={onUseNewPilotId}
+            className="mt-2 rounded-md border border-amber-400/60 bg-amber-700/20 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide"
+          >
+            Use New Pilot ID
+          </button>
+        </div>
+      ) : null} */}
+    </Panel>
+  );
+}
+
+function WarRoomView({
+  snapshot,
+  currentLobbyId,
+  currentJoinCode,
+  selfFactionId,
+  factions,
+  connectionStatus,
+  actionStates,
+  onAction,
+  onLeaveLobby,
+}: {
+  snapshot: Snapshot | null;
+  currentLobbyId: string | null;
+  currentJoinCode: string | null;
+  selfFactionId: number | null;
+  factions: Array<{ id: number; label: string; hp: number; aliveCount: number; playerCount: number; color: string }>;
+  connectionStatus: ConnectionStatus;
+  actionStates: ActionStateMap;
+  onAction: (action: ActionType) => void;
+  onLeaveLobby: () => void;
+}) {
+  const lobbyCount = snapshot?.players.length ?? 0;
+  const requestLeaveDisabled = connectionStatus !== "connected" || actionStates.request_leave.status === "sending";
+  const cancelLeaveDisabled = connectionStatus !== "connected" || actionStates.cancel_leave.status === "sending";
+  const leaveLobbyDisabled = connectionStatus !== "connected" || actionStates.leave_lobby.status === "sending";
+
+  return (
+    <Panel title="War Room" subtitle="Match starts exactly when 14 players are in lobby.">
+      <div className="grid gap-3 sm:grid-cols-2">
+        <MetricTile label="Join Code" value={currentJoinCode ?? "-"} />
+        {/* <MetricTile label="Lobby ID" value={currentLobbyId ? currentLobbyId.slice(0, 12) : "-"} /> */}
+        <MetricTile label="Lobby Fill" value={`${lobbyCount} / ${TARGET_LOBBY_SIZE}`} />
+        <MetricTile label="Faction" value={selfFactionId === null ? "Awaiting Assignment" : factionLabel(selfFactionId)} />
+      </div>
+
+      <div className="mt-3 space-y-2">
+        {factions.map((faction) => (
+          <div key={faction.id} className="rounded-lg border border-slate-700/70 bg-slate-950/50 p-2.5">
+            <div className="mb-1 flex items-center justify-between text-sm">
+              <span>{faction.label}</span>
+              <span className="font-semibold">{faction.playerCount} players</span>
+            </div>
+            <div className="h-2 w-full rounded-full bg-slate-800">
+              <div
+                className={`h-2 rounded-full ${faction.color}`}
+                style={{
+                  width: `${Math.min(
+                    100,
+                    Math.round((faction.playerCount / Math.max(Math.ceil(TARGET_LOBBY_SIZE / 2), 1)) * 100),
+                  )}%`,
+                }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-3">
+        {/* <ActionButton
+          label={actionStates.request_leave.status === "sending" ? "Sending..." : "Request Leave"}
+          disabled={requestLeaveDisabled}
+          tone="neutral"
+          onClick={() => onAction("request_leave")}
+        /> */}
+        {/* <ActionButton
+          label={actionStates.cancel_leave.status === "sending" ? "Sending..." : "Cancel Leave"}
+          disabled={cancelLeaveDisabled}
+          tone="neutral"
+          onClick={() => onAction("cancel_leave")}
+        /> */}
+        <ActionButton
+          label={actionStates.leave_lobby.status === "sending" ? "Leaving..." : "Leave Lobby"}
+          disabled={leaveLobbyDisabled}
+          tone="attack"
+          onClick={onLeaveLobby}
+        />
+      </div>
+
+      <div className="mt-2 grid gap-1 text-xs text-slate-400 sm:grid-cols-3">
+        <p>{statusMessage(actionStates.request_leave)}</p>
+        <p>{statusMessage(actionStates.cancel_leave)}</p>
+        <p>{statusMessage(actionStates.leave_lobby)}</p>
+      </div>
+    </Panel>
+  );
 }
 
 function CombatView({
   selfPlayer,
+  myFaction,
   factions,
+  onLeaveLobby,
 }: {
   selfPlayer: Snapshot["players"][number] | null;
+  myFaction: Snapshot["factions"][number] | null;
   factions: Array<{ id: number; label: string; hp: number; aliveCount: number; playerCount: number; color: string }>;
+  onLeaveLobby: () => void;
 }) {
   return (
     <section className="space-y-3">
-      <div className="space-y-3">
-        <FactionHealthCard factions={factions} />
-        <PlayerStatusCard player={selfPlayer} />
+      <div className="flex items-center justify-end">
+        <button
+          type="button"
+          onClick={onLeaveLobby}
+          className="rounded-lg border border-rose-500/50 bg-rose-700/20 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-rose-100 transition hover:bg-rose-600/30"
+        >
+          Leave Lobby
+        </button>
       </div>
+      <FactionHealthCard factions={factions} />
+      <PlayerStatusCard player={selfPlayer} />
+      <TeamBurstCard faction={myFaction} />
     </section>
   );
 }
@@ -965,6 +1648,9 @@ function SummaryView({
   connectionStatus,
   round,
   totalRounds,
+  reason,
+  onBackToEntry,
+  onUseNewPilotId,
 }: {
   summary: {
     winnerLabel: string;
@@ -977,13 +1663,18 @@ function SummaryView({
   connectionStatus: ConnectionStatus;
   round: number;
   totalRounds: number;
+  reason: string | null;
+  onBackToEntry: () => void;
+  onUseNewPilotId: () => void;
 }) {
   return (
     <Panel title="Match Summary" subtitle="Outcome and contribution snapshot.">
       <div className="rounded-xl border border-emerald-600/40 bg-emerald-950/20 p-4">
         <p className="text-xs uppercase tracking-wide text-emerald-300">Winner</p>
         <p className="mt-1 text-2xl font-semibold text-emerald-100">{summary?.winnerLabel ?? "Pending"}</p>
-        <p className="mt-1 text-sm text-emerald-200">Final round: {Math.max(round, 0)} / {totalRounds}</p>
+        <p className="mt-1 text-sm text-emerald-200">
+          Final round: {Math.max(round, 0)} / {totalRounds}
+        </p>
       </div>
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -996,10 +1687,19 @@ function SummaryView({
         />
       </div>
 
+      <div className="mt-4 rounded-lg border border-slate-700/70 bg-slate-950/50 px-3 py-2 text-sm text-slate-300">
+        Match end reason: <span className="font-semibold text-slate-100">{formatMatchEndReason(reason)}</span>
+      </div>
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-2">
+        <ActionButton label="Back to Entry" disabled={false} tone="neutral" onClick={onBackToEntry} />
+        <ActionButton label="Use New Pilot ID" disabled={false} tone="burst" onClick={onUseNewPilotId} />
+      </div>
+
       <p className="mt-4 text-sm text-slate-300">
         {connectionStatus === "connected"
-          ? "Waiting for next war room state from server."
-          : "Disconnected from server. Reconnect to receive next war room state."}
+          ? "Ready for another lobby."
+          : "Reconnect to receive real-time lobby updates."}
       </p>
     </Panel>
   );
@@ -1024,7 +1724,6 @@ function ActionBar({
 }) {
   const attackDisabled = Boolean(attackBlockReason) || attackState.status === "sending";
   const burstDisabled = Boolean(burstBlockReason) || burstState.status === "sending";
-
   const burstLabelBase = burstActionType === "burst_cancel" ? "Cancel" : "Burst";
 
   return (
@@ -1061,6 +1760,7 @@ function FactionHealthCard({
 }) {
   return (
     <div className="rounded-xl border border-slate-700/80 bg-slate-950/40 p-3">
+      <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Faction Health</p>
       <div className="space-y-2">
         {factions.map((faction) => (
           <div key={faction.id} className="rounded-lg border border-slate-700/70 bg-slate-950/50 p-2.5">
@@ -1069,7 +1769,10 @@ function FactionHealthCard({
               <span className="font-semibold">{Math.round(faction.hp)} HP</span>
             </div>
             <div className="h-2 w-full rounded-full bg-slate-800">
-              <div className={`h-2 rounded-full ${faction.color}`} style={{ width: `${Math.max(0, Math.min(100, faction.hp / 90))}%` }} />
+              <div
+                className={`h-2 rounded-full ${faction.color}`}
+                style={{ width: `${Math.max(0, Math.min(100, faction.hp / 90))}%` }}
+              />
             </div>
             <p className="mt-1 text-xs text-slate-400">
               {faction.aliveCount} alive / {faction.playerCount} total
@@ -1081,28 +1784,60 @@ function FactionHealthCard({
   );
 }
 
-function EventFeed({
-  combatFeed,
-  systemFeed,
-  expanded,
-  onToggleExpanded,
-}: {
-  combatFeed: FeedItem[];
-  systemFeed: FeedItem[];
-  expanded: boolean;
-  onToggleExpanded: () => void;
-}) {
+function PlayerStatusCard({ player }: { player: Snapshot["players"][number] | null }) {
+  if (!player) {
+    return (
+      <div className="rounded-xl border border-slate-700/80 bg-slate-950/40 p-3">
+        <p className="text-xs uppercase tracking-wide text-slate-400">Player Status</p>
+        <p className="mt-2 text-sm text-slate-300">Waiting for player snapshot.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-slate-700/80 bg-slate-950/40 p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-xs uppercase tracking-wide text-slate-400">Player Status</p>
+        <p className="truncate text-sm font-semibold text-slate-100">{player.name}</p>
+      </div>
+      <div className="space-y-1.5 text-sm">
+        <StatusLine label="State" value={player.isAlive ? "Alive" : "Eliminated"} />
+        <StatusLine label="Connection" value={player.connected ? "Connected" : "Disconnected"} />
+        <StatusLine label="HP" value={String(Math.round(player.hp))} />
+        <StatusLine label="Level / XP" value={`${player.level} / ${player.xp}`} />
+        <StatusLine label="ATK" value={String(player.attackPower)} />
+        <StatusLine label="Cooldown" value={`${player.cooldownRemaining}s`} />
+        <StatusLine label="Exposed" value={player.isExposed ? "Yes" : "No"} />
+        <StatusLine label="Kills / DMG" value={`${player.kills} / ${Math.round(player.damageDealt)}`} />
+      </div>
+    </div>
+  );
+}
+
+function TeamBurstCard({ faction }: { faction: Snapshot["factions"][number] | null }) {
+  const commitLabel =
+    faction?.burstCommitCount === null || faction?.burstCommitCount === undefined
+      ? "Hidden"
+      : String(faction.burstCommitCount);
+
+  return (
+    <div className="rounded-xl border border-slate-700/80 bg-slate-950/40 p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-xs uppercase tracking-wide text-slate-400">Team Burst</p>
+        <p className="text-xs font-semibold text-slate-200">{faction?.burstLocked ? "LOCKED" : "OPEN"}</p>
+      </div>
+      <p className="text-sm text-slate-200">
+        Committers: <span className="font-semibold">{commitLabel}</span>
+      </p>
+      <p className="mt-1 text-xs text-slate-400">Enemy commit counts remain hidden by server snapshot rules.</p>
+    </div>
+  );
+}
+
+function EventFeed({ combatFeed, systemFeed }: { combatFeed: FeedItem[]; systemFeed: FeedItem[] }) {
   return (
     <Panel title="Event Feed" subtitle="Combat and system stream">
-      <button
-        type="button"
-        onClick={onToggleExpanded}
-        className="mb-3 rounded-lg border border-slate-700/70 bg-slate-950/40 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-300 sm:hidden"
-      >
-        {expanded ? "Collapse feed" : "Expand feed"}
-      </button>
-
-      <div className={`${expanded ? "block" : "hidden"} space-y-4 sm:block`}>
+      <div className="space-y-4">
         <FeedSection title="Combat" items={combatFeed} emptyText="No combat events yet." />
         <FeedSection title="System / Errors" items={systemFeed} emptyText="No system messages yet." />
       </div>
@@ -1136,33 +1871,35 @@ function FeedSection({ title, items, emptyText }: { title: string; items: FeedIt
   );
 }
 
-function PlayerStatusCard({ player }: { player: Snapshot["players"][number] | null }) {
-  if (!player) {
-    return (
-      <div className="rounded-xl border border-slate-700/80 bg-slate-950/40 p-3">
-        <p className="text-xs uppercase tracking-wide text-slate-400">Player Status</p>
-        <p className="mt-2 text-sm text-slate-300">Waiting for player snapshot.</p>
-      </div>
-    );
-  }
+function NoticeBanner({ notice }: { notice: Notice }) {
+  const className =
+    notice.kind === "success"
+      ? "border-emerald-500/40 bg-emerald-900/25 text-emerald-100"
+      : notice.kind === "error"
+        ? "border-rose-500/40 bg-rose-900/25 text-rose-100"
+        : "border-sky-500/40 bg-sky-900/25 text-sky-100";
 
+  return <div className={`mt-3 rounded-xl border px-4 py-3 text-sm ${className}`}>{notice.message}</div>;
+}
+
+function InlineInfoBanner({ message, onDismiss }: { message: string; onDismiss: () => void }) {
   return (
-    <div className="rounded-xl border border-slate-700/80 bg-slate-950/40 p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-xs uppercase tracking-wide text-slate-400">Player Status</p>
-        <p className="truncate text-sm font-semibold text-slate-100">{player.name}</p>
-      </div>
-      <div className="space-y-1.5 text-sm">
-        <StatusLine label="State" value={player.isAlive ? "Alive" : "Eliminated"} />
-        <StatusLine label="HP" value={String(Math.round(player.hp))} />
-        <StatusLine label="Level / XP" value={`${player.level} / ${player.xp}`} />
-        <StatusLine label="ATK" value={String(player.attackPower)} />
+    <div className="mt-3 rounded-xl border border-cyan-500/40 bg-cyan-900/20 px-4 py-3 text-sm text-cyan-100">
+      <div className="flex items-start justify-between gap-3">
+        <p>{message}</p>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="rounded-md border border-cyan-400/60 px-2 py-1 text-xs font-semibold uppercase tracking-wide"
+        >
+          Hide
+        </button>
       </div>
     </div>
   );
 }
 
-function Panel({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
+function Panel({ title, subtitle, children }: { title: string; subtitle: string; children: ReactNode }) {
   return (
     <section className="rounded-2xl border border-slate-700/80 bg-slate-900/70 p-4 shadow-lg shadow-black/20">
       <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
@@ -1248,6 +1985,58 @@ function StatusLine({ label, value }: { label: string; value: string }) {
   );
 }
 
+function sendJoinIntentMessage(socket: WebSocket, intent: JoinIntent, identity: Identity): void {
+  if (intent.kind === "create_lobby") {
+    socket.send(JSON.stringify({ type: "create_lobby" }));
+    return;
+  }
+
+  if (intent.kind === "quick_play") {
+    socket.send(
+      JSON.stringify({
+        type: "join_lobby",
+        joinCode: LEGACY_JOIN_CODE,
+        playerId: identity.id,
+        name: identity.displayName,
+      }),
+    );
+    return;
+  }
+
+  if (intent.kind === "join_code") {
+    socket.send(
+      JSON.stringify({
+        type: "join_lobby",
+        joinCode: intent.joinCode,
+        playerId: identity.id,
+        name: identity.displayName,
+      }),
+    );
+    return;
+  }
+
+  if (intent.lobbyId !== LEGACY_LOBBY_ID) {
+    socket.send(
+      JSON.stringify({
+        type: "join_lobby",
+        lobbyId: intent.lobbyId,
+        playerId: identity.id,
+        name: identity.displayName,
+      }),
+    );
+    return;
+  }
+
+  socket.send(
+    JSON.stringify({
+      type: "join_lobby",
+      joinCode: intent.joinCode ?? LEGACY_JOIN_CODE,
+      playerId: identity.id,
+      name: identity.displayName,
+    }),
+  );
+}
+
 function bootstrapIdentity(): Identity | null {
   if (typeof window === "undefined") {
     return null;
@@ -1298,7 +2087,46 @@ function createInitialActionStates(): ActionStateMap {
     manual_attack: { status: "idle", message: null, tick: null },
     burst_commit: { status: "idle", message: null, tick: null },
     burst_cancel: { status: "idle", message: null, tick: null },
+    leave_lobby: { status: "idle", message: null, tick: null },
   };
+}
+
+function useEntryCooldownRemainingSeconds(entryCooldownEndsAtMs: number | null): number {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (entryCooldownEndsAtMs === null) {
+      return;
+    }
+
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => {
+      const currentNowMs = Date.now();
+      setNowMs(currentNowMs);
+      if (currentNowMs >= entryCooldownEndsAtMs) {
+        window.clearInterval(timer);
+      }
+    }, 250);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [entryCooldownEndsAtMs]);
+
+  return getEntryCooldownRemainingSeconds(entryCooldownEndsAtMs, nowMs);
+}
+
+function getEntryCooldownRemainingSeconds(entryCooldownEndsAtMs: number | null, nowMs = Date.now()): number {
+  if (entryCooldownEndsAtMs === null) {
+    return 0;
+  }
+
+  const remainingMs = entryCooldownEndsAtMs - nowMs;
+  if (remainingMs <= 0) {
+    return 0;
+  }
+
+  return Math.ceil(remainingMs / 1000);
 }
 
 function classifyEventChannel(eventType: string): FeedChannel {
@@ -1327,7 +2155,10 @@ function actionLabel(action: ActionType): string {
   if (action === "request_leave") {
     return "Leave request";
   }
-  return "Leave cancel";
+  if (action === "cancel_leave") {
+    return "Leave cancel";
+  }
+  return "Leave lobby";
 }
 
 function statusMessage(entry: ActionEntry): string {
@@ -1416,6 +2247,99 @@ function isActionType(value: string): value is ActionType {
   return ACTION_TYPES.includes(value as ActionType);
 }
 
+function entryActionFromIntent(intent: JoinIntent): EntryAction {
+  if (intent.kind === "quick_play") {
+    return "quick_play";
+  }
+  if (intent.kind === "create_lobby") {
+    return "create_lobby";
+  }
+  return "join_code";
+}
+
+function classifyJoinError(message: string): JoinErrorCategory {
+  const lower = message.toLowerCase();
+  if (lower.includes("lobby not found")) {
+    return "invalid_code";
+  }
+  if (lower.includes("lobby is full")) {
+    return "lobby_full";
+  }
+  if (lower.includes("already bound to another lobby")) {
+    return "bound_elsewhere";
+  }
+  if (lower.includes("rejoin cooldown active")) {
+    return "rejoin_cooldown";
+  }
+  if (lower.includes("match already started")) {
+    return "match_started";
+  }
+  return "generic";
+}
+
+function shouldOfferIdentityReset(category: JoinErrorCategory): boolean {
+  return category === "bound_elsewhere" || category === "rejoin_cooldown";
+}
+
+function joinErrorTitle(category: JoinErrorCategory): string {
+  if (category === "invalid_code") {
+    return "Lobby code not found";
+  }
+  if (category === "lobby_full") {
+    return "Lobby is full";
+  }
+  if (category === "bound_elsewhere") {
+    return "Pilot already bound";
+  }
+  if (category === "rejoin_cooldown") {
+    return "Rejoin cooldown active";
+  }
+  if (category === "match_started") {
+    return "Match already started";
+  }
+  return "Join failed";
+}
+
+function joinErrorHint(category: JoinErrorCategory): string {
+  if (category === "invalid_code") {
+    return "Double-check the 6-character join code.";
+  }
+  if (category === "lobby_full") {
+    return "Try another lobby or wait for slots to open.";
+  }
+  if (category === "bound_elsewhere") {
+    return "Leave from the current lobby first, or switch to a new pilot ID.";
+  }
+  if (category === "rejoin_cooldown") {
+    return "Wait for cooldown or switch to a new pilot ID.";
+  }
+  if (category === "match_started") {
+    return "Join another lobby that has not started.";
+  }
+  return "Please retry.";
+}
+
+function extractMatchEndReason(payload: Record<string, unknown> | null): string | null {
+  if (!payload) {
+    return null;
+  }
+
+  const reason = payload.reason;
+  return typeof reason === "string" ? reason : null;
+}
+
+function formatMatchEndReason(reason: string | null): string {
+  if (!reason) {
+    return "Unknown";
+  }
+
+  return reason.replaceAll("_", " ");
+}
+
+function buildDetachedNoticeMessage(previousLobbyId: string): string {
+  return `If you try to leave before a match starts, it will take effect in 5s.`;
+}
+
 function generateRandomDisplayName(): string {
   const adjectives = ["Swift", "Iron", "Silent", "Ember", "Noble", "Arcane"];
   const nouns = ["Falcon", "Warden", "Ranger", "Vanguard", "Sentinel", "Drifter"];
@@ -1463,4 +2387,26 @@ function parsePositiveEnvInt(value: string | undefined, fallback: number): numbe
 
   const rounded = Math.round(parsed);
   return rounded > 0 ? rounded : fallback;
+}
+
+function screenLabel(screen: AppScreen): string {
+  if (screen === "bootstrapping_identity") {
+    return "Bootstrapping Identity";
+  }
+  if (screen === "socket_connecting") {
+    return "Connecting";
+  }
+  if (screen === "entry_hub") {
+    return "Entry Hub";
+  }
+  if (screen === "joining_lobby") {
+    return "Joining Lobby";
+  }
+  if (screen === "war_room_pre_match") {
+    return "War Room";
+  }
+  if (screen === "live_match") {
+    return "Live Match";
+  }
+  return "Match Summary";
 }
