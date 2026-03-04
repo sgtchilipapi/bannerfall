@@ -671,10 +671,13 @@ function clientReducer(state: ClientState, action: ClientAction): ClientState {
 
 export default function Home() {
   const [identity, setIdentity] = useState<Identity | null>(null);
+  const [hasEnteredApp, setHasEnteredApp] = useState(false);
 
   useEffect(() => {
-    setIdentity(bootstrapIdentity());
+    setIdentity(loadDraftIdentity());
   }, []);
+
+  const activeIdentity = hasEnteredApp ? identity : null;
 
   const {
     state: clientState,
@@ -687,7 +690,34 @@ export default function Home() {
     useNewPilotId,
     dismissDetachedNotice,
     dismissJoinError,
-  } = useMatchClient(identity, (nextIdentity) => setIdentity(nextIdentity));
+  } = useMatchClient(activeIdentity, (nextIdentity) => setIdentity(nextIdentity));
+
+  const onRandomizeName = useCallback(() => {
+    setIdentity((currentIdentity) => {
+      if (!currentIdentity) {
+        return {
+          id: crypto.randomUUID(),
+          displayName: generateRandomDisplayName(),
+        };
+      }
+
+      return {
+        ...currentIdentity,
+        displayName: generateRandomDisplayName(),
+      };
+    });
+  }, []);
+
+  const onEnter = useCallback(() => {
+    const nextIdentity = identity ?? loadDraftIdentity();
+    if (!nextIdentity) {
+      return;
+    }
+
+    persistIdentity(nextIdentity);
+    setIdentity(nextIdentity);
+    setHasEnteredApp(true);
+  }, [identity]);
 
   const snapshot = clientState.snapshot;
   const displayName = identity?.displayName ?? clientState.session?.name ?? "Loading";
@@ -796,7 +826,7 @@ export default function Home() {
   const reconnectBannerNeeded = clientState.status !== "connected";
   const entryCooldownRemainingSeconds = useEntryCooldownRemainingSeconds(clientState.entryCooldownEndsAtMs);
 
-  return (
+  return hasEnteredApp ? (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <main className="mx-auto flex min-h-screen w-full max-w-6xl flex-col px-3 pb-28 pt-3 sm:px-5 md:pb-8 md:pt-5">
         <StatusStrip
@@ -913,6 +943,80 @@ export default function Home() {
             onBurst={() => sendMatchAction(burstActionType)}
           />
         ) : null}
+      </main>
+    </div>
+  ) : (
+    <LandingView
+      assignedName={identity?.displayName ?? "Assigning..."}
+      isIdentityReady={identity !== null}
+      onRandomizeName={onRandomizeName}
+      onEnter={onEnter}
+    />
+  );
+}
+
+function LandingView({
+  assignedName,
+  isIdentityReady,
+  onRandomizeName,
+  onEnter,
+}: {
+  assignedName: string;
+  isIdentityReady: boolean;
+  onRandomizeName: () => void;
+  onEnter: () => void;
+}) {
+  const onLearnMore = useCallback(() => {
+    const learnMoreSection = document.getElementById("learn-more");
+    if (!learnMoreSection) {
+      return;
+    }
+
+    learnMoreSection.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-slate-950 text-slate-100">
+      <main className="mx-auto flex min-h-screen w-full max-w-5xl flex-col px-4 py-6 sm:px-6 sm:py-10">
+        <section className="flex min-h-[72vh] flex-col justify-center rounded-2xl border border-slate-700/80 bg-slate-900/80 p-6 shadow-lg shadow-black/20 sm:p-10">
+          <p className="text-2xl font-semibold tracking-tight sm:text-3xl">Greetings. Welcome to BANNERFALL.</p>
+
+          <div className="mt-6 flex flex-wrap items-center gap-3">
+            <p className="text-base text-slate-200 sm:text-lg">
+              Your assigned name is <span className="font-semibold text-cyan-200">{assignedName}</span>.
+            </p>
+            <button
+              type="button"
+              onClick={onRandomizeName}
+              disabled={!isIdentityReady}
+              className="rounded-lg border border-cyan-500/60 bg-cyan-700/20 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-cyan-100 transition hover:bg-cyan-600/30 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              DICE
+            </button>
+          </div>
+
+          <p className="mt-6 text-sm uppercase tracking-[0.2em] text-slate-400">You may proceed.</p>
+
+          <div className="mt-5 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={onEnter}
+              disabled={!isIdentityReady}
+              className="min-h-11 rounded-xl border border-emerald-500/60 bg-emerald-700/25 px-5 py-2 text-sm font-semibold uppercase tracking-wide text-emerald-100 transition hover:bg-emerald-600/35 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              ENTER
+            </button>
+            <button
+              type="button"
+              onClick={onLearnMore}
+              className="min-h-11 rounded-xl border border-slate-500/70 bg-slate-700/25 px-5 py-2 text-sm font-semibold uppercase tracking-wide text-slate-100 transition hover:bg-slate-600/35"
+            >
+              LEARN MORE
+            </button>
+          </div>
+        </section>
+
+        <section id="learn-more" className="mt-6 min-h-[72vh] rounded-2xl border border-slate-800/80 bg-slate-950/30" />
       </main>
     </div>
   );
@@ -2037,7 +2141,7 @@ function sendJoinIntentMessage(socket: WebSocket, intent: JoinIntent, identity: 
   );
 }
 
-function bootstrapIdentity(): Identity | null {
+function loadDraftIdentity(): Identity | null {
   if (typeof window === "undefined") {
     return null;
   }
@@ -2048,10 +2152,16 @@ function bootstrapIdentity(): Identity | null {
   const id = existingId ?? crypto.randomUUID();
   const displayName = existingDisplayName ?? generateRandomDisplayName();
 
-  localStorage.setItem(LOCAL_ID_KEY, id);
-  localStorage.setItem(LOCAL_NAME_KEY, displayName);
-
   return { id, displayName };
+}
+
+function persistIdentity(identity: Identity): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  localStorage.setItem(LOCAL_ID_KEY, identity.id);
+  localStorage.setItem(LOCAL_NAME_KEY, identity.displayName);
 }
 
 function resolveWebSocketUrl(): string {
