@@ -270,8 +270,8 @@ for (let i = 1; i <= count; i += 1) {
     lastDecisionTick: -1,
     actionCount: 0,
     personality: {
-      aggression: randomBetween(0.65, 0.95),
-      burstBias: randomBetween(0.35, 0.6),
+      aggression: randomBetween(0.30, 0.95),
+      burstBias: randomBetween(0.1, 0.25),
       cancelBias: randomBetween(0.03, 0.1),
     },
   };

@@ -36,6 +36,13 @@ import type {
   ScheduledAttack,
 } from "./types.js";
 
+type DamageRouteSegment = {
+  targetType: "player" | "faction";
+  targetPlayerId: string | null;
+  targetFactionId: FactionId;
+  damage: number;
+};
+
 /** Returns the opposing faction id in a 2-faction match. */
 function oppositeFactionId(factionId: FactionId): FactionId {
   return factionId === 0 ? 1 : 0;
@@ -541,12 +548,14 @@ export class WarEngine {
     }
 
     const aliveByFaction: [number, number] = [this.getAliveCount(0), this.getAliveCount(1)];
+    let attackSequenceInTick = 0;
 
     for (const attack of attacks) {
       const attacker = this.state.players[attack.attackerId];
       if (!attacker || !attacker.isAlive) {
         continue;
       }
+      attackSequenceInTick += 1;
 
       const factionAttackers = attacksByFaction[attack.attackerFactionId];
       const aliveTeamSize = Math.max(1, aliveByFaction[attack.attackerFactionId]);
@@ -559,6 +568,25 @@ export class WarEngine {
         attacker.id,
         pendingDeaths,
       );
+
+      for (let segmentIndex = 0; segmentIndex < routing.segments.length; segmentIndex += 1) {
+        const segment = routing.segments[segmentIndex]!;
+        const segmentSequenceInAttack = segmentIndex + 1;
+        const eventId = `${this.state.tick}:${attackSequenceInTick}:${segmentSequenceInAttack}`;
+        this.emitEvent("attack_resolved", "Attack resolved", {
+          eventId,
+          tick: this.state.tick,
+          kind: attack.kind,
+          attackerId: attacker.id,
+          attackerFactionId: attack.attackerFactionId,
+          targetType: segment.targetType,
+          targetPlayerId: segment.targetPlayerId,
+          targetFactionId: segment.targetFactionId,
+          damage: segment.damage,
+          attackSequenceInTick,
+          segmentSequenceInAttack,
+        });
+      }
 
       attacker.damageDealt += routing.damageToPlayers + routing.damageToFaction;
 
@@ -594,11 +622,17 @@ export class WarEngine {
     totalDamage: number,
     attackerId: string,
     pendingDeaths: Map<string, string>,
-  ): { damageToPlayers: number; damageToFaction: number; hitExposedPlayers: boolean } {
+  ): {
+    damageToPlayers: number;
+    damageToFaction: number;
+    hitExposedPlayers: boolean;
+    segments: DamageRouteSegment[];
+  } {
     let remaining = totalDamage;
     let damageToPlayers = 0;
     let damageToFaction = 0;
     let hitExposedPlayers = false;
+    const segments: DamageRouteSegment[] = [];
 
     const exposedTargets = this.getExposedTargets(targetFactionId);
     for (const target of exposedTargets) {
@@ -615,6 +649,15 @@ export class WarEngine {
       damageToPlayers = roundDamage(damageToPlayers + applied);
       hitExposedPlayers = true;
 
+      if (applied > 0) {
+        segments.push({
+          targetType: "player",
+          targetPlayerId: target.id,
+          targetFactionId,
+          damage: roundDamage(applied),
+        });
+      }
+
       if (target.hp <= 0 && !pendingDeaths.has(target.id)) {
         pendingDeaths.set(target.id, attackerId);
       }
@@ -625,9 +668,18 @@ export class WarEngine {
       const factionApplied = Math.min(targetFaction.factionHp, remaining);
       targetFaction.factionHp = roundDamage(targetFaction.factionHp - factionApplied);
       damageToFaction = roundDamage(damageToFaction + factionApplied);
+
+      if (factionApplied > 0) {
+        segments.push({
+          targetType: "faction",
+          targetPlayerId: null,
+          targetFactionId,
+          damage: roundDamage(factionApplied),
+        });
+      }
     }
 
-    return { damageToPlayers, damageToFaction, hitExposedPlayers };
+    return { damageToPlayers, damageToFaction, hitExposedPlayers, segments };
   }
 
   /**
