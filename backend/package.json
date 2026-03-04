@@ -9,6 +9,7 @@
     "start": "node dist/server.js",
     "dev": "tsc && node dist/server.js",
     "swarm": "node scripts/swarm-clients.mjs",
+    "swarm:legacy-fill": "node scripts/swarm-clients.mjs --count 12 --joinCode LEGACY --idPrefix legacy-fill --namePrefix LegacyFill",
     "test:watch": "node --test --watch dist/**/*.test.js",
     "test:coverage": "echo \"Coverage not yet configured in this environment\" && exit 1"
   },

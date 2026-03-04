@@ -71,6 +71,8 @@ test("WarEngine death/reset: death state blocks actions and next-round reset rev
   const attackerAId = factionZero[1]!;
   const victimId = factionOne[0]!;
 
+  assert.equal(getPlayer(engine, victimId).deaths, 0, "death count should start at zero");
+
   assert.equal(engine.queueManualAttack(victimId).ok, true, "victim should be able to self-expose");
   engine.tick();
 
@@ -110,6 +112,7 @@ test("WarEngine death/reset: death state blocks actions and next-round reset rev
   assert.equal(victimAfterDeath.hp, 0, "dead victim HP should be clamped to zero");
   assert.equal(victimAfterDeath.isExposed, false, "dead victim should not remain exposed");
   assert.equal(victimAfterDeath.cooldownRemaining, 0, "dead victim cooldown should be cleared");
+  assert.equal(victimAfterDeath.deaths, 1, "death count should increment on elimination");
 
   assert.deepEqual(engine.queueManualAttack(victimId), {
     ok: false,
@@ -134,6 +137,7 @@ test("WarEngine death/reset: death state blocks actions and next-round reset rev
   assert.equal(victimAfterReset.hp, PLAYER_HP_INITIAL, "round reset should restore player HP");
   assert.equal(victimAfterReset.isExposed, false, "round reset should clear exposure");
   assert.equal(victimAfterReset.cooldownRemaining, 0, "round reset should clear cooldown");
+  assert.equal(victimAfterReset.deaths, 1, "round reset should preserve match-wide deaths");
 
   assert.ok(levelBeforeReset > 1, "leveler should have gained levels before reset");
   assert.equal(getPlayer(engine, levelerId).level, levelBeforeReset, "round reset should preserve player level");

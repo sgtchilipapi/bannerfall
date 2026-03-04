@@ -648,6 +648,7 @@ export class WarEngine {
       victim.pendingBurstCancelTick = null;
       victim.isCommittedToBurst = false;
       victim.burstCommitTimestamp = null;
+      victim.deaths += 1;
       this.removeBurstCommit(victim.factionId, victim.id);
 
       const killer = this.state.players[killerId];
@@ -976,6 +977,7 @@ export class WarEngine {
       isExposed: player.isExposed,
       cooldownRemaining: player.cooldownRemaining,
       kills: player.kills,
+      deaths: player.deaths,
       damageDealt: roundDamage(player.damageDealt),
       attackPower: player.attackPower,
       connected: player.connected,
@@ -1019,6 +1021,7 @@ export class WarEngine {
       pendingLobbyLeaveTick: null,
       exposureAppliedTick: -1,
       kills: 0,
+      deaths: 0,
       damageDealt: 0,
       connected: true,
     };
