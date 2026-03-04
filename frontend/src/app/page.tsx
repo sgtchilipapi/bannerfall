@@ -27,14 +27,14 @@ const XP_THRESHOLDS = [0, 5, 12, 22, 35] as const;
 const ATTACK_POWER_MAX = 65;
 const FACTION_HP_MAX = 9000;
 const PLAYER_MOTION_MS = 260;
-const PROJECTILE_CHARGE_MS = 150;
-const PROJECTILE_TRAVEL_MS = 120;
-const PROJECTILE_TRAIL_FADE_MS = 260;
+const PROJECTILE_CHARGE_MS = 10;
+const PROJECTILE_TRAVEL_MS = 300;
+const PROJECTILE_TRAIL_FADE_MS = 600;
 const PROJECTILE_IMPACT_MS = 300;
 const PROJECTILE_LIFETIME_MS = PROJECTILE_CHARGE_MS + PROJECTILE_TRAVEL_MS + PROJECTILE_TRAIL_FADE_MS;
 const MAX_SEEN_ATTACK_EVENT_IDS = 1200;
-const TEAM_BASE_GAP_TOP_Y = 22;
-const TEAM_BASE_GAP_BOTTOM_Y = 78;
+const TEAM_BASE_GAP_TOP_Y = 16;
+const TEAM_BASE_GAP_BOTTOM_Y = 84;
 const PLAYER_EXPOSURE_SHIFT_PERCENT = 3.2;
 
 const ACTION_TYPES = [
@@ -1888,7 +1888,7 @@ function BattlefieldScene({ snapshot }: { snapshot: Snapshot }) {
   }, []);
 
   return (
-    <div className="relative h-full min-h-[320px] overflow-hidden rounded-xl border border-slate-700/80 bg-slate-900/70 sm:min-h-[360px]">
+    <div className="relative h-full min-h-0 overflow-hidden rounded-xl border border-slate-700/80 bg-slate-900/70 md:h-[clamp(280px,48vh,520px)]">
 
       {[0, 1].map((factionIdRaw) => {
         const factionId = factionIdRaw as 0 | 1;
@@ -2035,11 +2035,11 @@ function ProjectileTrail({ projectile }: { projectile: BattlefieldProjectile }) 
         }}
       />
       <div
-        className={`pointer-events-none absolute z-40 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full ${tokenClass}`}
+        className={`pointer-events-none absolute z-40 h-1 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full ${tokenClass}`}
         style={{
           left: `${currentX}%`,
           top: `${currentY}%`,
-          transform: `translate(-50%, -50%) scale(${isCharging ? 1.9 : 1})`,
+          transform: `translate(-50%, -50%) scale(${isCharging ? 1.2 : 1})`,
           transition:
             phase === "spawn"
               ? "none"
@@ -2224,13 +2224,17 @@ function FactionHealthCard({
     } as const);
 
   return (
-    <div className="flex h-full min-h-0 flex-1 flex-col rounded-xl border border-slate-700/80 bg-slate-950/40 p-3">
-      <div className="grid h-full flex-1 min-h-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)] md:items-center">
-        <FactionHealthLane faction={leftFaction} align="left" />
-        <div className="h-full min-h-[320px] rounded-xl border border-slate-700/80 bg-slate-900/70 sm:min-h-[360px]">
+    <div className="flex h-full min-h-0 flex-1 flex-col rounded-xl border border-slate-700/80 bg-slate-950/40 p-2">
+      <div className="grid h-full min-h-0 flex-1 grid-cols-2 grid-rows-[auto_minmax(0,1fr)] gap-1.5 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)] md:grid-rows-1 md:items-center">
+        <div className="col-span-1 row-start-1 md:col-start-1 md:row-start-1">
+          <FactionHealthLane faction={leftFaction} align="left" />
+        </div>
+        <div className="col-span-1 row-start-1 md:col-start-3 md:row-start-1">
+          <FactionHealthLane faction={rightFaction} align="right" />
+        </div>
+        <div className="col-span-2 row-start-2 h-full min-h-0 rounded-xl border border-slate-700/80 bg-slate-900/70 md:col-span-1 md:col-start-2 md:row-start-1 md:h-[clamp(280px,48vh,520px)]">
           {middleContent ?? <div className="h-full w-full" />}
         </div>
-        <FactionHealthLane faction={rightFaction} align="right" />
       </div>
     </div>
   );
@@ -2243,14 +2247,14 @@ function FactionHealthLane({
   faction: { id: number; label: string; hp: number; color: string };
   align: "left" | "right";
 }) {
-  const alignmentClass = align === "right" ? "text-right" : "text-left";
+  const rowDirectionClass = align === "right" ? "flex-row-reverse" : "";
   const healthPercent = clampPercent((faction.hp / FACTION_HP_MAX) * 100);
 
   return (
-    <div className={`space-y-1 ${alignmentClass}`}>
-      <p className="text-xs font-semibold uppercase tracking-wide text-slate-300">{faction.label}</p>
-      <div className="h-2 w-full rounded-full bg-slate-800">
-        <div className={`h-2 rounded-full ${faction.color}`} style={{ width: `${healthPercent}%` }} />
+    <div className={`flex w-full items-center gap-1.5 ${rowDirectionClass}`}>
+      <p className="w-4 shrink-0 text-[9px] font-semibold uppercase tracking-wide text-slate-300">HP</p>
+      <div className="h-1.5 w-full rounded-full bg-slate-800/90">
+        <div className={`h-1.5 rounded-full ${faction.color}`} style={{ width: `${healthPercent}%` }} />
       </div>
     </div>
   );
