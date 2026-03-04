@@ -26,6 +26,16 @@ const PLAYER_HP_MAX = 100;
 const XP_THRESHOLDS = [0, 5, 12, 22, 35] as const;
 const ATTACK_POWER_MAX = 65;
 const FACTION_HP_MAX = 9000;
+const PLAYER_MOTION_MS = 260;
+const PROJECTILE_CHARGE_MS = 150;
+const PROJECTILE_TRAVEL_MS = 120;
+const PROJECTILE_TRAIL_FADE_MS = 260;
+const PROJECTILE_IMPACT_MS = 300;
+const PROJECTILE_LIFETIME_MS = PROJECTILE_CHARGE_MS + PROJECTILE_TRAVEL_MS + PROJECTILE_TRAIL_FADE_MS;
+const MAX_SEEN_ATTACK_EVENT_IDS = 1200;
+const TEAM_BASE_GAP_TOP_Y = 22;
+const TEAM_BASE_GAP_BOTTOM_Y = 78;
+const PLAYER_EXPOSURE_SHIFT_PERCENT = 3.2;
 
 const ACTION_TYPES = [
   "request_leave",
@@ -67,6 +77,20 @@ type EngineEvent = {
   type: string;
   message: string;
   payload: Record<string, unknown> | null;
+};
+
+type AttackResolvedPayload = {
+  eventId: string;
+  tick: number;
+  kind: "manual" | "burst";
+  attackerId: string;
+  attackerFactionId: 0 | 1;
+  targetType: "player" | "faction";
+  targetPlayerId: string | null;
+  targetFactionId: 0 | 1;
+  damage: number;
+  attackSequenceInTick: number;
+  segmentSequenceInAttack: number;
 };
 
 type Snapshot = {
@@ -856,11 +880,11 @@ export default function Home() {
         <div
           className={`mt-4 grid gap-4 ${
             clientState.screen === "live_match" || clientState.screen === "match_summary"
-              ? "md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] md:items-start"
+              ? "min-h-0 flex-1 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] md:items-start"
               : ""
           }`}
         >
-          <section className="space-y-4">
+          <section className={clientState.screen === "live_match" ? "flex min-h-0 flex-1 flex-col" : "space-y-4"}>
             {clientState.screen === "bootstrapping_identity" || clientState.screen === "socket_connecting" ? (
               <Panel title="Loading Pilot" subtitle="Preparing identity and websocket session.">
                 <p className="text-sm text-slate-300">Initializing local pilot profile...</p>
@@ -898,7 +922,7 @@ export default function Home() {
             ) : null}
 
             {clientState.screen === "live_match" ? (
-              <CombatView factions={factionHealth} />
+              <CombatView factions={factionHealth} snapshot={snapshot} selfFactionId={selfFactionId} />
             ) : null}
 
             {clientState.screen === "match_summary" ? (
@@ -1707,14 +1731,334 @@ function WarRoomView({
 
 function CombatView({
   factions,
+  snapshot,
+  selfFactionId,
 }: {
   factions: Array<{ id: number; label: string; hp: number; aliveCount: number; playerCount: number; color: string }>;
+  snapshot: Snapshot | null;
+  selfFactionId: number | null;
 }) {
+  if (!snapshot) {
+    return (
+      <section className="space-y-3">
+        <FactionHealthCard factions={factions} selfFactionId={selfFactionId} />
+      </section>
+    );
+  }
+
   return (
-    <section className="space-y-3">
-      <FactionHealthCard factions={factions} />
+    <section className="flex min-h-0 flex-1 flex-col">
+      <FactionHealthCard
+        factions={factions}
+        selfFactionId={selfFactionId}
+        middleContent={<BattlefieldScene snapshot={snapshot} />}
+      />
     </section>
   );
+}
+
+type BattlefieldAnchor = {
+  x: number;
+  y: number;
+};
+
+type BattlefieldProjectile = {
+  id: string;
+  kind: "manual" | "burst";
+  start: BattlefieldAnchor;
+  end: BattlefieldAnchor;
+  targetKey: string;
+};
+
+function BattlefieldScene({ snapshot }: { snapshot: Snapshot }) {
+  const [projectiles, setProjectiles] = useState<BattlefieldProjectile[]>([]);
+  const [impactVersionByTarget, setImpactVersionByTarget] = useState<Record<string, number>>({});
+
+  const projectileTimersRef = useRef<number[]>([]);
+  const impactTimersRef = useRef<number[]>([]);
+  const seenAttackEventIdsRef = useRef<Set<string>>(new Set());
+  const seenAttackEventOrderRef = useRef<string[]>([]);
+  const lastSnapshotTickRef = useRef(-1);
+  const bottomFactionId: 0 | 1 = snapshot.selfFactionId === 0 || snapshot.selfFactionId === 1 ? snapshot.selfFactionId : 1;
+
+  const slotAnchorsByPlayerId = useMemo(() => {
+    const map = new Map<string, BattlefieldAnchor>();
+    const factionZero = snapshot.players.filter((player) => player.factionId === 0);
+    const factionOne = snapshot.players.filter((player) => player.factionId === 1);
+
+    for (let index = 0; index < factionZero.length; index += 1) {
+      const player = factionZero[index]!;
+      map.set(player.id, getFactionPlayerAnchor(player, index, factionZero.length, bottomFactionId));
+    }
+    for (let index = 0; index < factionOne.length; index += 1) {
+      const player = factionOne[index]!;
+      map.set(player.id, getFactionPlayerAnchor(player, index, factionOne.length, bottomFactionId));
+    }
+
+    return map;
+  }, [snapshot.players, bottomFactionId]);
+
+  const triggerImpact = useCallback((targetKey: string) => {
+    setImpactVersionByTarget((current) => ({
+      ...current,
+      [targetKey]: (current[targetKey] ?? 0) + 1,
+    }));
+  }, []);
+
+  useEffect(() => {
+    if (snapshot.tick < lastSnapshotTickRef.current) {
+      seenAttackEventIdsRef.current.clear();
+      seenAttackEventOrderRef.current = [];
+      const resetVisualsTimer = window.setTimeout(() => {
+        setProjectiles([]);
+        setImpactVersionByTarget({});
+      }, 0);
+      projectileTimersRef.current.push(resetVisualsTimer);
+    }
+    lastSnapshotTickRef.current = snapshot.tick;
+
+    const attackEvents = snapshot.events
+      .map((event) => parseAttackResolvedEvent(event))
+      .filter((payload): payload is AttackResolvedPayload => payload !== null);
+    const queuedProjectiles: BattlefieldProjectile[] = [];
+
+    for (const payload of attackEvents) {
+      if (seenAttackEventIdsRef.current.has(payload.eventId)) {
+        continue;
+      }
+      seenAttackEventIdsRef.current.add(payload.eventId);
+      seenAttackEventOrderRef.current.push(payload.eventId);
+      if (seenAttackEventOrderRef.current.length > MAX_SEEN_ATTACK_EVENT_IDS) {
+        const staleEventId = seenAttackEventOrderRef.current.shift();
+        if (staleEventId) {
+          seenAttackEventIdsRef.current.delete(staleEventId);
+        }
+      }
+
+      const attackerAnchor =
+        slotAnchorsByPlayerId.get(payload.attackerId) ??
+        getFactionBaseAnchor(payload.attackerFactionId, bottomFactionId);
+      const targetAnchor =
+        payload.targetType === "player" && payload.targetPlayerId
+          ? slotAnchorsByPlayerId.get(payload.targetPlayerId) ??
+            getFactionBaseAnchor(payload.targetFactionId, bottomFactionId)
+          : getFactionBaseAnchor(payload.targetFactionId, bottomFactionId);
+      const targetKey =
+        payload.targetType === "player" && payload.targetPlayerId
+          ? `player:${payload.targetPlayerId}`
+          : `faction:${payload.targetFactionId}`;
+
+      const projectile: BattlefieldProjectile = {
+        id: payload.eventId,
+        kind: payload.kind,
+        start: attackerAnchor,
+        end: targetAnchor,
+        targetKey,
+      };
+      queuedProjectiles.push(projectile);
+
+      const impactTimer = window.setTimeout(() => {
+        triggerImpact(targetKey);
+      }, PROJECTILE_CHARGE_MS + PROJECTILE_TRAVEL_MS);
+      impactTimersRef.current.push(impactTimer);
+
+      const removeProjectileTimer = window.setTimeout(() => {
+        setProjectiles((current) => current.filter((entry) => entry.id !== projectile.id));
+      }, PROJECTILE_LIFETIME_MS);
+      projectileTimersRef.current.push(removeProjectileTimer);
+    }
+
+    if (queuedProjectiles.length > 0) {
+      const addProjectilesTimer = window.setTimeout(() => {
+        setProjectiles((current) => [...current, ...queuedProjectiles]);
+      }, 0);
+      projectileTimersRef.current.push(addProjectilesTimer);
+    }
+  }, [snapshot.events, snapshot.tick, slotAnchorsByPlayerId, triggerImpact, bottomFactionId]);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of projectileTimersRef.current) {
+        window.clearTimeout(timer);
+      }
+      for (const timer of impactTimersRef.current) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, []);
+
+  return (
+    <div className="relative h-full min-h-[320px] overflow-hidden rounded-xl border border-slate-700/80 bg-slate-900/70 sm:min-h-[360px]">
+
+      {[0, 1].map((factionIdRaw) => {
+        const factionId = factionIdRaw as 0 | 1;
+        const anchor = getFactionBaseAnchor(factionId, bottomFactionId);
+        const impactVersion = impactVersionByTarget[`faction:${factionId}`] ?? 0;
+        const hitAnimation = getHitAnimation(impactVersion);
+
+        return (
+          <div
+            key={`faction-base-${factionId}`}
+            className="absolute z-20 -translate-x-1/2 -translate-y-1/2"
+            style={{
+              left: `${anchor.x}%`,
+              top: `${anchor.y}%`,
+            }}
+          >
+            <div
+              className={`h-10 w-10 border ${
+                factionId === 0
+                  ? "border-cyan-300/80 bg-transparent text-cyan-100"
+                  : "border-rose-300/80 bg-transparent text-rose-100"
+              }`}
+              style={{
+                animation: hitAnimation,
+                willChange: hitAnimation ? "transform, background-color" : undefined,
+              }}
+            >
+              <div className="flex h-full w-full items-center justify-center text-[9px] font-semibold tracking-wide">
+                <p>{factionId === 0 ? "F0" : "F1"}</p>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
+      {snapshot.players.map((player) => {
+        const anchor = slotAnchorsByPlayerId.get(player.id);
+        if (!anchor) {
+          return null;
+        }
+
+        const impactVersion = impactVersionByTarget[`player:${player.id}`] ?? 0;
+        const nameToken = player.name.slice(0, 2).toUpperCase();
+        const hitAnimation = getHitAnimation(impactVersion);
+
+        return (
+          <div
+            key={player.id}
+            className="absolute z-30 -translate-x-1/2 -translate-y-1/2"
+            style={{
+              left: `${anchor.x}%`,
+              top: `${anchor.y}%`,
+              opacity: player.isAlive ? 1 : 0.42,
+              transition: `top ${PLAYER_MOTION_MS}ms ease-out, left ${PLAYER_MOTION_MS}ms ease-out, opacity 180ms ease-out`,
+            }}
+          >
+            <div
+              className={`h-6 w-6 rounded-full border text-[8px] font-semibold ${
+                player.factionId === 0
+                  ? "border-cyan-300/80 bg-transparent text-cyan-100"
+                  : "border-rose-300/80 bg-transparent text-rose-100"
+              }`}
+              style={{
+                boxShadow: player.isExposed ? "0 0 8px rgba(226,232,240,0.22)" : "none",
+                animation: hitAnimation,
+                willChange: hitAnimation ? "transform, background-color" : undefined,
+              }}
+            >
+              <div className="flex h-full w-full items-center justify-center">{nameToken}</div>
+            </div>
+          </div>
+        );
+      })}
+
+      {projectiles.map((projectile) => (
+        <ProjectileTrail key={projectile.id} projectile={projectile} />
+      ))}
+    </div>
+  );
+}
+
+function ProjectileTrail({ projectile }: { projectile: BattlefieldProjectile }) {
+  const [phase, setPhase] = useState<"spawn" | "charge" | "travel">("spawn");
+
+  useEffect(() => {
+    const chargeFrame = window.requestAnimationFrame(() => {
+      setPhase("charge");
+    });
+    const travelTimer = window.setTimeout(() => {
+      setPhase("travel");
+    }, PROJECTILE_CHARGE_MS);
+
+    return () => {
+      window.cancelAnimationFrame(chargeFrame);
+      window.clearTimeout(travelTimer);
+    };
+  }, []);
+
+  const isTraveling = phase === "travel";
+  const isCharging = phase === "charge";
+  const currentX = isTraveling ? projectile.end.x : projectile.start.x;
+  const currentY = isTraveling ? projectile.end.y : projectile.start.y;
+  const dx = projectile.end.x - projectile.start.x;
+  const dy = projectile.end.y - projectile.start.y;
+  const angleDeg = (Math.atan2(dy, dx) * 180) / Math.PI + 180;
+  const distance = Math.hypot(dx, dy);
+  const trailLengthRem = Math.min(Math.max(distance * 0.09, 2.2), 6.2);
+  const trailStartColor =
+    projectile.kind === "burst" ? "rgba(34,211,238,0.72)" : "rgba(251,113,133,0.72)";
+  const trailMidColor =
+    projectile.kind === "burst" ? "rgba(34,211,238,0.34)" : "rgba(251,113,133,0.34)";
+  const trailEndColor = projectile.kind === "burst" ? "rgba(34,211,238,0.01)" : "rgba(251,113,133,0.01)";
+  const trailTransition =
+    phase === "spawn"
+      ? "none"
+      : isCharging
+        ? "none"
+        : `left ${PROJECTILE_TRAVEL_MS}ms linear, top ${PROJECTILE_TRAVEL_MS}ms linear`;
+  const tokenClass =
+    projectile.kind === "burst"
+      ? "bg-cyan-200 shadow-[0_0_9px_rgba(34,211,238,0.8)]"
+      : "bg-rose-200 shadow-[0_0_9px_rgba(251,113,133,0.8)]";
+
+  return (
+    <>
+      <div
+        className="pointer-events-none absolute rounded-full"
+        style={{
+          zIndex: 35,
+          left: `${currentX}%`,
+          top: `${currentY}%`,
+          width: `${trailLengthRem}rem`,
+          height: "0.08rem",
+          transform: `translateY(-50%) rotate(${angleDeg}deg)`,
+          transformOrigin: "0% 50%",
+          background: `linear-gradient(90deg, ${trailStartColor} 0%, ${trailMidColor} 55%, ${trailEndColor} 100%)`,
+          boxShadow: `0 0 6px ${trailMidColor}`,
+          filter: "blur(0.45px)",
+          opacity: isTraveling ? 0.78 : 0,
+          transition: trailTransition,
+          animation: isTraveling
+            ? `bf-projectile-laser-fade ${PROJECTILE_TRAVEL_MS + PROJECTILE_TRAIL_FADE_MS}ms ease-out forwards`
+            : undefined,
+        }}
+      />
+      <div
+        className={`pointer-events-none absolute z-40 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full ${tokenClass}`}
+        style={{
+          left: `${currentX}%`,
+          top: `${currentY}%`,
+          transform: `translate(-50%, -50%) scale(${isCharging ? 1.9 : 1})`,
+          transition:
+            phase === "spawn"
+              ? "none"
+              : isCharging
+                ? `transform ${PROJECTILE_CHARGE_MS}ms ease-out`
+                : `left ${PROJECTILE_TRAVEL_MS}ms linear, top ${PROJECTILE_TRAVEL_MS}ms linear, transform ${PROJECTILE_TRAVEL_MS}ms linear`,
+        }}
+      />
+    </>
+  );
+}
+
+function getHitAnimation(impactVersion: number): string | undefined {
+  if (impactVersion <= 0) {
+    return undefined;
+  }
+
+  const suffix = impactVersion % 2 === 0 ? "b" : "a";
+  return `bf-hit-horizontal-shake-${suffix} 220ms cubic-bezier(0.36, 0.07, 0.19, 0.97), bf-hit-red-fill-${suffix} 280ms ease-out`;
 }
 
 function SummaryView({
@@ -1849,23 +2193,44 @@ function ActionBar({
 
 function FactionHealthCard({
   factions,
+  selfFactionId,
+  middleContent,
 }: {
   factions: Array<{ id: number; label: string; hp: number; aliveCount: number; playerCount: number; color: string }>;
+  selfFactionId: number | null;
+  middleContent?: ReactNode;
 }) {
-  const redFaction =
-    factions.find((faction) => faction.id === 0) ??
-    ({ id: 0, label: "Red Faction", hp: 0, aliveCount: 0, playerCount: 0, color: "bg-rose-500" } as const);
-  const blueFaction =
-    factions.find((faction) => faction.id === 1) ??
-    ({ id: 1, label: "Blue Faction", hp: 0, aliveCount: 0, playerCount: 0, color: "bg-cyan-500" } as const);
+  const normalizedSelfFactionId = selfFactionId === 0 || selfFactionId === 1 ? selfFactionId : 0;
+  const oppositeFactionId = normalizedSelfFactionId === 0 ? 1 : 0;
+  const leftFaction =
+    factions.find((faction) => faction.id === normalizedSelfFactionId) ??
+    ({
+      id: normalizedSelfFactionId,
+      label: normalizedSelfFactionId === 0 ? "Red Faction" : "Blue Faction",
+      hp: 0,
+      aliveCount: 0,
+      playerCount: 0,
+      color: normalizedSelfFactionId === 0 ? "bg-rose-500" : "bg-cyan-500",
+    } as const);
+  const rightFaction =
+    factions.find((faction) => faction.id === oppositeFactionId) ??
+    ({
+      id: oppositeFactionId,
+      label: oppositeFactionId === 0 ? "Red Faction" : "Blue Faction",
+      hp: 0,
+      aliveCount: 0,
+      playerCount: 0,
+      color: oppositeFactionId === 0 ? "bg-rose-500" : "bg-cyan-500",
+    } as const);
 
   return (
-    <div className="rounded-xl border border-slate-700/80 bg-slate-950/40 p-3">
-      <p className="mb-3 text-xs uppercase tracking-wide text-slate-400">Faction Health</p>
-      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)] md:items-center">
-        <FactionHealthLane faction={redFaction} align="left" />
-        <div className="min-h-44 rounded-xl border border-dashed border-slate-600/70 bg-slate-900/60" />
-        <FactionHealthLane faction={blueFaction} align="right" />
+    <div className="flex h-full min-h-0 flex-1 flex-col rounded-xl border border-slate-700/80 bg-slate-950/40 p-3">
+      <div className="grid h-full flex-1 min-h-0 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)] md:items-center">
+        <FactionHealthLane faction={leftFaction} align="left" />
+        <div className="h-full min-h-[320px] rounded-xl border border-slate-700/80 bg-slate-900/70 sm:min-h-[360px]">
+          {middleContent ?? <div className="h-full w-full" />}
+        </div>
+        <FactionHealthLane faction={rightFaction} align="right" />
       </div>
     </div>
   );
@@ -2211,7 +2576,93 @@ function classifyEventChannel(eventType: string): FeedChannel {
 }
 
 function buildEventKey(event: EngineEvent): string {
+  const payloadEventId = extractPayloadEventId(event.payload);
+  if (payloadEventId) {
+    return `${event.tick}:${event.type}:${payloadEventId}`;
+  }
   return `${event.tick}:${event.type}:${event.message}`;
+}
+
+function parseAttackResolvedEvent(event: EngineEvent): AttackResolvedPayload | null {
+  if (event.type !== "attack_resolved" || !event.payload) {
+    return null;
+  }
+
+  const payload = event.payload;
+  const attackerFactionId = toFactionId(payload.attackerFactionId);
+  const targetFactionId = toFactionId(payload.targetFactionId);
+  const targetPlayerIdRaw = payload.targetPlayerId;
+
+  if (
+    typeof payload.eventId !== "string" ||
+    typeof payload.tick !== "number" ||
+    (payload.kind !== "manual" && payload.kind !== "burst") ||
+    typeof payload.attackerId !== "string" ||
+    attackerFactionId === null ||
+    (payload.targetType !== "player" && payload.targetType !== "faction") ||
+    !(typeof targetPlayerIdRaw === "string" || targetPlayerIdRaw === null) ||
+    targetFactionId === null ||
+    typeof payload.damage !== "number" ||
+    typeof payload.attackSequenceInTick !== "number" ||
+    typeof payload.segmentSequenceInAttack !== "number"
+  ) {
+    return null;
+  }
+
+  return {
+    eventId: payload.eventId,
+    tick: payload.tick,
+    kind: payload.kind,
+    attackerId: payload.attackerId,
+    attackerFactionId,
+    targetType: payload.targetType,
+    targetPlayerId: targetPlayerIdRaw,
+    targetFactionId,
+    damage: payload.damage,
+    attackSequenceInTick: payload.attackSequenceInTick,
+    segmentSequenceInAttack: payload.segmentSequenceInAttack,
+  };
+}
+
+function extractPayloadEventId(payload: Record<string, unknown> | null): string | null {
+  if (!payload) {
+    return null;
+  }
+  return typeof payload.eventId === "string" ? payload.eventId : null;
+}
+
+function toFactionId(value: unknown): 0 | 1 | null {
+  return value === 0 || value === 1 ? value : null;
+}
+
+function getFactionBaseAnchor(factionId: 0 | 1, bottomFactionId: 0 | 1): BattlefieldAnchor {
+  if (factionId === bottomFactionId) {
+    return { x: 10, y: TEAM_BASE_GAP_BOTTOM_Y };
+  }
+  return { x: 90, y: TEAM_BASE_GAP_TOP_Y };
+}
+
+function getFactionPlayerAnchor(
+  player: Snapshot["players"][number],
+  slotIndex: number,
+  slotCount: number,
+  bottomFactionId: 0 | 1,
+): BattlefieldAnchor {
+  const safeCount = Math.max(slotCount, 1);
+  const laneStartX = 26;
+  const laneEndX = 74;
+  const horizontalSpan = laneEndX - laneStartX;
+  const x =
+    safeCount === 1 ? 50 : laneStartX + (horizontalSpan * Math.max(slotIndex, 0)) / Math.max(safeCount - 1, 1);
+  const isBottomFaction = player.factionId === bottomFactionId;
+  const backlineY = isBottomFaction ? TEAM_BASE_GAP_BOTTOM_Y : TEAM_BASE_GAP_TOP_Y;
+  const exposedOffset = player.isExposed
+    ? isBottomFaction
+      ? -PLAYER_EXPOSURE_SHIFT_PERCENT
+      : PLAYER_EXPOSURE_SHIFT_PERCENT
+    : 0;
+  const y = backlineY + exposedOffset;
+  return { x, y };
 }
 
 function pushFeedItem(feed: FeedItem[], item: FeedItem): FeedItem[] {
