@@ -7,6 +7,7 @@
 export const TICK_SECONDS = 1;
 
 /** Maximum lobby size (7v7). */
+// For local manual testing, use the websocket swarm script instead of editing this constant.
 export const MAX_PLAYERS = 14;
 /** Two opposing factions. */
 export const FACTION_COUNT = 2;
@@ -32,8 +33,9 @@ export const BURST_EXPOSURE_BASE_SECONDS = 5; // 3 before + 1 during + 1 after
 /** Burst and lobby control timings. */
 export const BURST_LOCK_RATIO = 0.7;
 export const BURST_CANCEL_SECONDS = 3;
-export const LOBBY_LEAVE_SECONDS = 5;
-export const LOBBY_REJOIN_COOLDOWN_SECONDS = 5;
+export const LOBBY_LEAVE_SECONDS = 0;
+export const ENTRY_HUB_COOLDOWN_SECONDS = 5; // keep UI cooldown
+export const LOBBY_REJOIN_COOLDOWN_SECONDS = 0;
 
 /** XP model from MVP (cumulative thresholds). */
 export const XP_THRESHOLDS = [0, 5, 12, 22, 35] as const;

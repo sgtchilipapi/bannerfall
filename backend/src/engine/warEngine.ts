@@ -145,6 +145,11 @@ export class WarEngine {
     return this.state.tick;
   }
 
+  /** Indicates whether a player record currently exists in this lobby/match instance. */
+  public hasPlayer(playerId: string): boolean {
+    return this.state.players[playerId] !== undefined;
+  }
+
   /** Updates transport-level connection status for an existing player record. */
   public setPlayerConnected(playerId: string, connected: boolean): void {
     const player = this.state.players[playerId];

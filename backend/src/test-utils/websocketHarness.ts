@@ -99,3 +99,17 @@ export async function waitForMessageType(
 export function sendJson(socket: WebSocket, payload: Record<string, unknown>): void {
   socket.send(JSON.stringify(payload));
 }
+
+/** Opens a socket and captures the server's initial connected + state handshake without race conditions. */
+export async function openSocketWithHandshake(
+  url: string,
+  timeoutMs = 2_000,
+): Promise<{ socket: WebSocket; connected: Envelope; state: Envelope }> {
+  const socket = new WebSocket(url);
+  const connectedPromise = waitForMessageType(socket, "connected", timeoutMs);
+  const statePromise = waitForMessageType(socket, "state", timeoutMs);
+  await waitForOpen(socket, timeoutMs);
+
+  const [connected, state] = await Promise.all([connectedPromise, statePromise]);
+  return { socket, connected, state };
+}
