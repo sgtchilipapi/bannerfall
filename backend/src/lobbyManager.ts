@@ -92,10 +92,26 @@ export class LobbyManager {
     for (const lobby of this.lobbies.values()) {
       lobby.engine.tick();
     }
+    this.reconcilePlayerBindings();
   }
 
   public getAllLobbies(): LobbyRecord[] {
     return [...this.lobbies.values()];
+  }
+
+  /** Removes stale player->lobby bindings after delayed leaves or lobby lifecycle changes. */
+  public reconcilePlayerBindings(): void {
+    const stalePlayerIds: string[] = [];
+    for (const [playerId, lobbyId] of this.playerLobbyById.entries()) {
+      const lobby = this.lobbies.get(lobbyId);
+      if (!lobby || !lobby.engine.hasPlayer(playerId)) {
+        stalePlayerIds.push(playerId);
+      }
+    }
+
+    for (const playerId of stalePlayerIds) {
+      this.playerLobbyById.delete(playerId);
+    }
   }
 
   private generateJoinCode(): string {

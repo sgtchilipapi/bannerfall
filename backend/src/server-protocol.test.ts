@@ -3,11 +3,24 @@ import test from "node:test";
 import { WebSocket } from "ws";
 import { createServer } from "./createServer.js";
 import {
+  LOBBY_LEAVE_SECONDS,
+  LOBBY_REJOIN_COOLDOWN_SECONDS,
+  MAX_PLAYERS,
+} from "./engine/constants.js";
+import {
   getFreePort,
+  openSocketWithHandshake,
   sendJson,
   waitForMessageType,
-  waitForOpen,
 } from "./test-utils/websocketHarness.js";
+
+function extractPlayers(snapshotEnvelope: Record<string, unknown>): Array<Record<string, unknown>> {
+  return (snapshotEnvelope.snapshot as Record<string, unknown>).players as Array<Record<string, unknown>>;
+}
+
+function extractStarted(snapshotEnvelope: Record<string, unknown>): boolean {
+  return ((snapshotEnvelope.snapshot as Record<string, unknown>).started as boolean) ?? false;
+}
 
 test("server protocol: connect/join/state/action/ack/error and malformed message handling", async () => {
   const port = await getFreePort();
@@ -15,15 +28,15 @@ test("server protocol: connect/join/state/action/ack/error and malformed message
 
   const sockets: WebSocket[] = [];
   try {
-    const joinedSocket = new WebSocket(`ws://127.0.0.1:${port}`);
+    const joinedClient = await openSocketWithHandshake(`ws://127.0.0.1:${port}`);
+    const joinedSocket = joinedClient.socket;
     sockets.push(joinedSocket);
-    await waitForOpen(joinedSocket);
 
-    const connected = await waitForMessageType(joinedSocket, "connected");
+    const connected = joinedClient.connected;
     assert.equal(connected.type, "connected");
     assert.equal(typeof connected.tickSeconds, "number");
 
-    const initialState = await waitForMessageType(joinedSocket, "state");
+    const initialState = joinedClient.state;
     assert.equal(initialState.type, "state");
     assert.equal(typeof initialState.snapshot, "object");
     assert.equal(initialState.lobbyId, "legacy");
@@ -58,11 +71,9 @@ test("server protocol: connect/join/state/action/ack/error and malformed message
     assert.equal(malformedError.type, "error");
     assert.equal(malformedError.message, "Invalid JSON message.");
 
-    const unjoinedSocket = new WebSocket(`ws://127.0.0.1:${port}`);
+    const unjoinedClient = await openSocketWithHandshake(`ws://127.0.0.1:${port}`);
+    const unjoinedSocket = unjoinedClient.socket;
     sockets.push(unjoinedSocket);
-    await waitForOpen(unjoinedSocket);
-    await waitForMessageType(unjoinedSocket, "connected");
-    await waitForMessageType(unjoinedSocket, "state");
 
     sendJson(unjoinedSocket, { type: "manual_attack" });
     const preJoinActionError = await waitForMessageType(unjoinedSocket, "error");
@@ -84,11 +95,9 @@ test("server protocol: create_lobby + join_lobby isolates state and blocks cross
 
   const sockets: WebSocket[] = [];
   try {
-    const owner = new WebSocket(`ws://127.0.0.1:${port}`);
+    const ownerClient = await openSocketWithHandshake(`ws://127.0.0.1:${port}`);
+    const owner = ownerClient.socket;
     sockets.push(owner);
-    await waitForOpen(owner);
-    await waitForMessageType(owner, "connected");
-    await waitForMessageType(owner, "state");
 
     sendJson(owner, { type: "create_lobby" });
     const createdA = await waitForMessageType(owner, "lobby_created");
@@ -109,11 +118,9 @@ test("server protocol: create_lobby + join_lobby isolates state and blocks cross
     assert.equal(ownerJoined.playerId, "alpha-player");
     assert.equal(ownerJoined.lobbyId, createdA.lobbyId);
 
-    const otherSocket = new WebSocket(`ws://127.0.0.1:${port}`);
+    const otherClient = await openSocketWithHandshake(`ws://127.0.0.1:${port}`);
+    const otherSocket = otherClient.socket;
     sockets.push(otherSocket);
-    await waitForOpen(otherSocket);
-    await waitForMessageType(otherSocket, "connected");
-    await waitForMessageType(otherSocket, "state");
 
     sendJson(otherSocket, {
       type: "join_lobby",
@@ -136,17 +143,265 @@ test("server protocol: create_lobby + join_lobby isolates state and blocks cross
 
     sendJson(owner, { type: "state" });
     const ownerState = await waitForMessageType(owner, "state");
-    const ownerPlayers = ((ownerState.snapshot as Record<string, unknown>).players as Array<Record<string, unknown>>).map(
-      (player) => player.id,
-    );
+    const ownerPlayers = extractPlayers(ownerState).map((player) => player.id);
     assert.deepEqual(ownerPlayers, ["alpha-player"]);
 
     sendJson(otherSocket, { type: "state" });
     const otherState = await waitForMessageType(otherSocket, "state");
-    const otherPlayers = ((otherState.snapshot as Record<string, unknown>).players as Array<Record<string, unknown>>).map(
-      (player) => player.id,
-    );
+    const otherPlayers = extractPlayers(otherState).map((player) => player.id);
     assert.deepEqual(otherPlayers, ["bravo-player"]);
+  } finally {
+    for (const socket of sockets) {
+      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+        socket.close();
+      }
+    }
+    await server.close();
+  }
+});
+
+test("server protocol: leave_lobby pre-match detaches socket session and allows same socket to join another lobby", async () => {
+  const port = await getFreePort();
+  const server = createServer({ port, autoStartTick: false });
+
+  const sockets: WebSocket[] = [];
+  try {
+    const ownerClient = await openSocketWithHandshake(`ws://127.0.0.1:${port}`);
+    const owner = ownerClient.socket;
+    sockets.push(owner);
+
+    sendJson(owner, { type: "create_lobby" });
+    const createdA = await waitForMessageType(owner, "lobby_created");
+
+    sendJson(owner, { type: "create_lobby" });
+    const createdB = await waitForMessageType(owner, "lobby_created");
+
+    sendJson(owner, {
+      type: "join_lobby",
+      joinCode: createdA.joinCode,
+      playerId: "alpha-player",
+      name: "Alpha",
+    });
+    await waitForMessageType(owner, "lobby_joined");
+
+    const leaveAckPromise = waitForMessageType(owner, "ack");
+    const detachedStatePromise = waitForMessageType(owner, "state");
+    sendJson(owner, { type: "leave_lobby" });
+    const leaveAck = await leaveAckPromise;
+    assert.equal(leaveAck.action, "leave_lobby");
+    assert.equal(leaveAck.lobbyId, createdA.lobbyId);
+
+    const detachedState = await detachedStatePromise;
+    assert.equal(detachedState.lobbyId, "legacy");
+
+    sendJson(owner, {
+      type: "join_lobby",
+      joinCode: createdB.joinCode,
+      playerId: "bravo-player",
+      name: "Bravo",
+    });
+    const rejoined = await waitForMessageType(owner, "lobby_joined");
+    assert.equal(rejoined.playerId, "bravo-player");
+    assert.equal(rejoined.lobbyId, createdB.lobbyId);
+  } finally {
+    for (const socket of sockets) {
+      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+        socket.close();
+      }
+    }
+    await server.close();
+  }
+});
+
+test("server protocol: leave_lobby pre-match preserves binding until delayed leave finalizes, then allows reuse after cooldown", async () => {
+  const port = await getFreePort();
+  const server = createServer({ port, autoStartTick: false });
+
+  const sockets: WebSocket[] = [];
+  try {
+    const ownerClient = await openSocketWithHandshake(`ws://127.0.0.1:${port}`);
+    const owner = ownerClient.socket;
+    sockets.push(owner);
+
+    sendJson(owner, { type: "create_lobby" });
+    const createdA = await waitForMessageType(owner, "lobby_created");
+
+    sendJson(owner, { type: "create_lobby" });
+    const createdB = await waitForMessageType(owner, "lobby_created");
+
+    sendJson(owner, {
+      type: "join_lobby",
+      joinCode: createdA.joinCode,
+      playerId: "alpha-player",
+      name: "Alpha",
+    });
+    await waitForMessageType(owner, "lobby_joined");
+
+    const leaveAckPromise = waitForMessageType(owner, "ack");
+    const detachedStatePromise = waitForMessageType(owner, "state");
+    sendJson(owner, { type: "leave_lobby" });
+    await leaveAckPromise;
+    await detachedStatePromise;
+
+    const challengerClient = await openSocketWithHandshake(`ws://127.0.0.1:${port}`);
+    const challenger = challengerClient.socket;
+    sockets.push(challenger);
+
+    sendJson(challenger, {
+      type: "join_lobby",
+      joinCode: createdB.joinCode,
+      playerId: "alpha-player",
+      name: "Alpha-Clone",
+    });
+    const stillBound = await waitForMessageType(challenger, "error");
+    assert.equal(stillBound.message, "This playerId is already bound to another lobby.");
+
+    for (let tick = 0; tick < LOBBY_LEAVE_SECONDS + LOBBY_REJOIN_COOLDOWN_SECONDS; tick += 1) {
+      server.lobbyManager.tickAllLobbies();
+    }
+
+    sendJson(challenger, {
+      type: "join_lobby",
+      joinCode: createdB.joinCode,
+      playerId: "alpha-player",
+      name: "Alpha-Rejoined",
+    });
+    const joinedAfterCooldown = await waitForMessageType(challenger, "lobby_joined");
+    assert.equal(joinedAfterCooldown.playerId, "alpha-player");
+    assert.equal(joinedAfterCooldown.lobbyId, createdB.lobbyId);
+  } finally {
+    for (const socket of sockets) {
+      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+        socket.close();
+      }
+    }
+    await server.close();
+  }
+});
+
+test("server protocol: leave_lobby post-start detaches socket while player remains in match as disconnected", async () => {
+  const port = await getFreePort();
+  const server = createServer({ port, autoStartTick: false });
+
+  const sockets: WebSocket[] = [];
+  try {
+    const ownerClient = await openSocketWithHandshake(`ws://127.0.0.1:${port}`);
+    const owner = ownerClient.socket;
+    sockets.push(owner);
+
+    sendJson(owner, { type: "create_lobby" });
+    const created = await waitForMessageType(owner, "lobby_created");
+
+    sendJson(owner, {
+      type: "join_lobby",
+      joinCode: created.joinCode,
+      playerId: "p1",
+      name: "P1",
+    });
+    await waitForMessageType(owner, "lobby_joined");
+
+    const joinedSockets: WebSocket[] = [owner];
+    for (let index = 2; index <= MAX_PLAYERS; index += 1) {
+      const client = await openSocketWithHandshake(`ws://127.0.0.1:${port}`);
+      const socket = client.socket;
+      sockets.push(socket);
+      joinedSockets.push(socket);
+
+      sendJson(socket, {
+        type: "join_lobby",
+        joinCode: created.joinCode,
+        playerId: `p${index}`,
+        name: `P${index}`,
+      });
+      await waitForMessageType(socket, "lobby_joined");
+    }
+
+    const observerSocket = joinedSockets[1];
+    assert.ok(observerSocket);
+
+    sendJson(observerSocket, { type: "state" });
+    const startedState = await waitForMessageType(observerSocket, "state");
+    assert.equal(extractStarted(startedState), true);
+
+    const leaveAckPromise = waitForMessageType(owner, "ack");
+    const ownerDetachedPromise = waitForMessageType(owner, "state");
+    sendJson(owner, { type: "leave_lobby" });
+    const leaveAck = await leaveAckPromise;
+    assert.equal(leaveAck.action, "leave_lobby");
+    assert.equal(leaveAck.lobbyId, created.lobbyId);
+
+    const ownerDetached = await ownerDetachedPromise;
+    assert.equal(ownerDetached.lobbyId, "legacy");
+
+    sendJson(observerSocket, { type: "state" });
+    const teammateView = await waitForMessageType(observerSocket, "state");
+    const p1 = extractPlayers(teammateView).find((player) => player.id === "p1");
+    assert.ok(p1);
+    assert.equal(p1.connected, false);
+  } finally {
+    for (const socket of sockets) {
+      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+        socket.close();
+      }
+    }
+    await server.close();
+  }
+});
+
+test("server protocol: match starts exactly when the 14th player joins", async () => {
+  const port = await getFreePort();
+  const server = createServer({ port, autoStartTick: false });
+
+  const sockets: WebSocket[] = [];
+  try {
+    const ownerClient = await openSocketWithHandshake(`ws://127.0.0.1:${port}`);
+    const owner = ownerClient.socket;
+    sockets.push(owner);
+
+    sendJson(owner, { type: "create_lobby" });
+    const created = await waitForMessageType(owner, "lobby_created");
+
+    const participants: WebSocket[] = [];
+
+    for (let index = 1; index <= MAX_PLAYERS - 1; index += 1) {
+      const client = await openSocketWithHandshake(`ws://127.0.0.1:${port}`);
+      const socket = client.socket;
+      sockets.push(socket);
+      participants.push(socket);
+
+      sendJson(socket, {
+        type: "join_lobby",
+        joinCode: created.joinCode,
+        playerId: `prestart-${index}`,
+        name: `PreStart${index}`,
+      });
+      await waitForMessageType(socket, "lobby_joined");
+    }
+
+    const watcherSocket = participants[0];
+    assert.ok(watcherSocket);
+
+    sendJson(watcherSocket, { type: "state" });
+    const beforeStart = await waitForMessageType(watcherSocket, "state");
+    assert.equal(extractStarted(beforeStart), false);
+    assert.equal(extractPlayers(beforeStart).length, MAX_PLAYERS - 1);
+
+    const finalClient = await openSocketWithHandshake(`ws://127.0.0.1:${port}`);
+    const finalSocket = finalClient.socket;
+    sockets.push(finalSocket);
+
+    sendJson(finalSocket, {
+      type: "join_lobby",
+      joinCode: created.joinCode,
+      playerId: "starter-14",
+      name: "Starter14",
+    });
+    await waitForMessageType(finalSocket, "lobby_joined");
+
+    sendJson(watcherSocket, { type: "state" });
+    const afterStart = await waitForMessageType(watcherSocket, "state");
+    assert.equal(extractStarted(afterStart), true);
+    assert.equal(extractPlayers(afterStart).length, MAX_PLAYERS);
   } finally {
     for (const socket of sockets) {
       if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {

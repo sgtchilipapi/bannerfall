@@ -181,6 +181,7 @@ export function createServer(options: CreateServerOptions = {}): BannerfallServe
             ? msg.playerId.trim()
             : randomUUID();
 
+        lobbyManager.reconcilePlayerBindings();
         const existingLobbyId = lobbyManager.getPlayerLobbyId(requestedPlayerId);
         if (existingLobbyId && existingLobbyId !== lobby.lobbyId) {
           send(ws, "error", { message: "This playerId is already bound to another lobby." });
@@ -231,6 +232,7 @@ export function createServer(options: CreateServerOptions = {}): BannerfallServe
         const requestedPlayerId =
           typeof msg.playerId === "string" && msg.playerId.trim().length > 0 ? msg.playerId.trim() : randomUUID();
 
+        lobbyManager.reconcilePlayerBindings();
         const existingLobbyId = lobbyManager.getPlayerLobbyId(requestedPlayerId);
         if (existingLobbyId && existingLobbyId !== lobby.lobbyId) {
           send(ws, "error", { message: "This playerId is already bound to another lobby." });
@@ -270,20 +272,32 @@ export function createServer(options: CreateServerOptions = {}): BannerfallServe
           return;
         }
 
-        const lobby = lobbyManager.getLobbyById(session.lobbyId);
+        const previousLobbyId = session.lobbyId;
+        const previousPlayerId = session.playerId;
+
+        const lobby = lobbyManager.getLobbyById(previousLobbyId);
         if (!lobby) {
           send(ws, "error", { message: "Lobby not found." });
           return;
         }
 
-        const result = lobby.engine.requestLobbyLeave(session.playerId);
-        if (!result.ok) {
-          send(ws, "error", { message: result.error ?? "Leave failed." });
-          return;
+        if (lobby.engine.hasPlayer(previousPlayerId)) {
+          lobby.engine.setPlayerConnected(previousPlayerId, false);
+          if (!lobby.engine.isStarted()) {
+            const leaveResult = lobby.engine.requestLobbyLeave(previousPlayerId);
+            if (!leaveResult.ok) {
+              send(ws, "error", { message: leaveResult.error ?? "Leave failed." });
+              return;
+            }
+          }
         }
 
-        send(ws, "ack", { action: type, tick: lobby.engine.getCurrentTick(), lobbyId: session.lobbyId });
-        broadcastLobbySnapshots(session.lobbyId);
+        session.playerId = null;
+        session.lobbyId = LEGACY_LOBBY_ID;
+
+        send(ws, "ack", { action: type, tick: lobby.engine.getCurrentTick(), lobbyId: previousLobbyId });
+        sendState(ws, session);
+        broadcastLobbySnapshots(previousLobbyId);
         return;
       }
 
