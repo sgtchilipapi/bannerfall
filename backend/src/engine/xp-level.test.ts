@@ -47,6 +47,15 @@ function getSnapshotPlayer(engine: WarEngine, playerId: string) {
   return player;
 }
 
+function waitForCooldownClear(engine: WarEngine, playerId: string): void {
+  let safety = 0;
+  while (getSnapshotPlayer(engine, playerId).cooldownRemaining > 0) {
+    engine.tick();
+    safety += 1;
+    assert.ok(safety < 200, "attacker cooldown should eventually expire");
+  }
+}
+
 function performLandedManualHit(engine: WarEngine, attackerId: string, targetId: string): void {
   advanceToCombat(engine);
 
@@ -69,12 +78,28 @@ function performLandedManualHit(engine: WarEngine, attackerId: string, targetId:
   assert.equal(damageEntry.hitExposedPlayers, true, "manual hit should route into exposed target");
   assert.ok(damageEntry.damageToPlayers > 0, "landed manual should damage a player");
 
-  let safety = 0;
-  while (getSnapshotPlayer(engine, attackerId).cooldownRemaining > 0) {
-    engine.tick();
-    safety += 1;
-    assert.ok(safety < 200, "attacker cooldown should eventually expire");
-  }
+  waitForCooldownClear(engine, attackerId);
+}
+
+function performFactionDamageManualHit(engine: WarEngine, attackerId: string): void {
+  advanceToCombat(engine);
+
+  assert.equal(engine.queueManualAttack(attackerId).ok, true, "attacker should be able to queue manual attack");
+  engine.tick();
+
+  const resolvedTick = engine.getCurrentTick();
+  const damageEntry = engine
+    .getOutcomeSummary()
+    .damageLog.find(
+      (entry) => entry.tick === resolvedTick && entry.attackerId === attackerId && entry.kind === "manual",
+    );
+
+  assert.ok(damageEntry, "expected attacker manual damage entry on resolve tick");
+  assert.equal(damageEntry.hitExposedPlayers, false, "faction-only manual should not route to exposed players");
+  assert.equal(damageEntry.damageToPlayers, 0, "faction-only manual should not damage players");
+  assert.ok(damageEntry.damageToFaction > 0, "faction-only manual should damage faction HP");
+
+  waitForCooldownClear(engine, attackerId);
 }
 
 test("WarEngine xp/level: manual landed hit grants +5 XP and levels at threshold", () => {
@@ -96,7 +121,20 @@ test("WarEngine xp/level: manual landed hit grants +5 XP and levels at threshold
   assert.equal(snapshotAttacker.attackPower, BASE_ATTACK_POWER + ATTACK_POWER_PER_LEVEL);
 });
 
-test("WarEngine xp/level: kill credit grants +2 XP on top of landed-manual XP", () => {
+test("WarEngine xp/level: manual faction-HP hit grants +5 XP", () => {
+  const engine = new WarEngine();
+  fillLobbyAndStart(engine);
+
+  const factionZero = getFactionPlayerIds(engine, 0);
+  const attackerId = factionZero[0]!;
+
+  performFactionDamageManualHit(engine, attackerId);
+
+  const attacker = getOutcomePlayer(engine, attackerId);
+  assert.equal(attacker.xp, MANUAL_LANDED_XP);
+});
+
+test("WarEngine xp/level: kill credit grants +10 XP on top of landed-manual XP", () => {
   const engine = new WarEngine();
   fillLobbyAndStart(engine);
   advanceToCombat(engine);

@@ -23,7 +23,7 @@ export interface PlayerState {
   hp: number;
   /** Current attack power (derived from level). */
   attackPower: number;
-  /** Remaining seconds until manual attack is available. */
+  /** Remaining seconds until attack actions are available (manual or burst execution). */
   cooldownRemaining: number;
   /** Whether damage routes to this player first when exposed. */
   isExposed: boolean;
