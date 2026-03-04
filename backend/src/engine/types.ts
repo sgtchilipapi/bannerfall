@@ -43,6 +43,8 @@ export interface PlayerState {
   exposureAppliedTick: number;
   /** Match-wide kill count. */
   kills: number;
+  /** Match-wide death count. */
+  deaths: number;
   /** Match-wide damage contribution. */
   damageDealt: number;
   /** Transport-level connection flag (player can exist while disconnected). */
@@ -165,6 +167,7 @@ export interface PublicPlayerView {
   isExposed: boolean;
   cooldownRemaining: number;
   kills: number;
+  deaths: number;
   damageDealt: number;
   attackPower: number;
   connected: boolean;

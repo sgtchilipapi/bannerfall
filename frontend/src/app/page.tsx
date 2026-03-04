@@ -22,6 +22,10 @@ const RECONNECT_MAX_DELAY_MS = 0;
 const TARGET_LOBBY_SIZE = parsePositiveEnvInt(process.env.NEXT_PUBLIC_TARGET_LOBBY_SIZE, 14);
 const LEGACY_LOBBY_ID = "legacy";
 const LEGACY_JOIN_CODE = "LEGACY";
+const PLAYER_HP_MAX = 100;
+const XP_THRESHOLDS = [0, 5, 12, 22, 35] as const;
+const ATTACK_POWER_MAX = 65;
+const FACTION_HP_MAX = 9000;
 
 const ACTION_TYPES = [
   "request_leave",
@@ -98,6 +102,7 @@ type Snapshot = {
     connected: boolean;
     isCommittedToBurst: boolean | null;
     kills: number;
+    deaths: number;
     damageDealt: number;
   }[];
   events: EngineEvent[];
@@ -746,16 +751,7 @@ export default function Home() {
   const totalRounds = snapshot?.totalRounds ?? 5;
   const phaseRemaining = snapshot?.phaseRemaining ?? 0;
   const totalPhaseSeconds = getPhaseDurationSeconds(phase);
-  const lobbyPlayerCount = snapshot?.players.length ?? 0;
-  const phaseProgressPercent = Math.min(100, Math.max(0, Math.round((phaseRemaining / totalPhaseSeconds) * 100)));
-  const lobbyProgressPercent = Math.min(
-    100,
-    Math.round((Math.max(lobbyPlayerCount, 0) / Math.max(TARGET_LOBBY_SIZE, 1)) * 100),
-  );
-  const topProgressPercent =
-    clientState.screen === "entry_hub" || clientState.screen === "joining_lobby"
-      ? lobbyProgressPercent
-      : phaseProgressPercent;
+  const phaseProgressPercent = clampPercent((phaseRemaining / Math.max(totalPhaseSeconds, 1)) * 100);
   const factionHealth = useMemo(() => {
     if (!snapshot) {
       return [
@@ -821,8 +817,6 @@ export default function Home() {
     burstActionType,
   );
 
-  const combatFeed = clientState.feed.filter((item) => item.channel === "combat");
-  const systemFeed = clientState.feed.filter((item) => item.channel !== "combat");
   const reconnectBannerNeeded = clientState.status !== "connected";
   const entryCooldownRemainingSeconds = useEntryCooldownRemainingSeconds(clientState.entryCooldownEndsAtMs);
 
@@ -835,15 +829,9 @@ export default function Home() {
           screen={clientState.screen}
           phase={phase}
           round={round}
-          totalRounds={totalRounds}
-          progressPercent={topProgressPercent}
+          progressPercent={phaseProgressPercent}
           playerLabel={displayName}
-          lobbyPlayerCount={lobbyPlayerCount}
-          targetLobbySize={TARGET_LOBBY_SIZE}
-          factions={factionHealth}
           selfFactionId={selfFactionId}
-          currentLobbyId={clientState.currentLobbyId}
-          currentJoinCode={clientState.currentJoinCode}
         />
 
         {reconnectBannerNeeded ? (
@@ -910,7 +898,7 @@ export default function Home() {
             ) : null}
 
             {clientState.screen === "live_match" ? (
-              <CombatView selfPlayer={selfPlayer} myFaction={myFaction} factions={factionHealth} onLeaveLobby={leaveLobby} />
+              <CombatView factions={factionHealth} />
             ) : null}
 
             {clientState.screen === "match_summary" ? (
@@ -934,6 +922,7 @@ export default function Home() {
 
         {clientState.screen === "live_match" ? (
           <ActionBar
+            selfPlayer={selfPlayer}
             attackState={clientState.actionStates.manual_attack}
             burstState={clientState.actionStates[burstActionType]}
             burstActionType={burstActionType}
@@ -1440,30 +1429,18 @@ function StatusStrip({
   screen,
   phase,
   round,
-  totalRounds,
   progressPercent,
   playerLabel,
-  lobbyPlayerCount,
-  targetLobbySize,
-  factions,
   selfFactionId,
-  currentLobbyId,
-  currentJoinCode,
 }: {
   connectionStatus: ConnectionStatus;
   reconnectAttempt: number;
   screen: AppScreen;
   phase: string;
   round: number;
-  totalRounds: number;
   progressPercent: number;
   playerLabel: string;
-  lobbyPlayerCount: number;
-  targetLobbySize: number;
-  factions: Array<{ id: number; label: string; playerCount: number; color: string }>;
   selfFactionId: number | null;
-  currentLobbyId: string | null;
-  currentJoinCode: string | null;
 }) {
   const connectionClass =
     connectionStatus === "connected"
@@ -1477,14 +1454,9 @@ function StatusStrip({
       ? "ONLINE"
       : connectionStatus === "reconnecting"
         ? `RETRY ${Math.max(1, reconnectAttempt)}`
-        : connectionStatus === "connecting"
+      : connectionStatus === "connecting"
           ? "CONNECTING"
           : "OFFLINE";
-
-  const progressLabel =
-    screen === "entry_hub" || screen === "joining_lobby" || screen === "war_room_pre_match"
-      ? `Lobby Fill ${lobbyPlayerCount}/${targetLobbySize}`
-      : `${formatPhaseLabel(phase)} ${Math.max(round, 0)}/${totalRounds}`;
 
   return (
     <header className="rounded-2xl border border-slate-700/80 bg-slate-900/85 px-4 py-4 shadow-lg shadow-black/25 backdrop-blur">
@@ -1498,10 +1470,25 @@ function StatusStrip({
         </span>
       </div>
 
-      <div className="mt-3 grid gap-2 sm:grid-cols-3">
-        <MetricTile label="Player" value={playerLabel} compact />
-        <MetricTile label="Faction" value={selfFactionId === null ? "No Faction" : factionLabel(selfFactionId)} compact />
-      </div>
+      {screen === "live_match" ? (
+        <div className="mt-3 rounded-xl border border-slate-700/80 bg-slate-950/60 p-3">
+          <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-200">
+            <span>{formatPhaseLabel(phase)}</span>
+            <span>{`Round ${Math.max(round, 0)}/5`}</span>
+          </div>
+          <div className="h-2 w-full rounded-full bg-slate-800">
+            <div
+              className="h-2 rounded-full bg-cyan-500"
+              style={{ width: `${clampPercent(progressPercent)}%` }}
+            />
+          </div>
+        </div>
+      ) : (
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          <MetricTile label="Player" value={playerLabel} compact />
+          <MetricTile label="Faction" value={selfFactionId === null ? "No Faction" : factionLabel(selfFactionId)} compact />
+        </div>
+      )}
 
     </header>
   );
@@ -1719,30 +1706,13 @@ function WarRoomView({
 }
 
 function CombatView({
-  selfPlayer,
-  myFaction,
   factions,
-  onLeaveLobby,
 }: {
-  selfPlayer: Snapshot["players"][number] | null;
-  myFaction: Snapshot["factions"][number] | null;
   factions: Array<{ id: number; label: string; hp: number; aliveCount: number; playerCount: number; color: string }>;
-  onLeaveLobby: () => void;
 }) {
   return (
     <section className="space-y-3">
-      <div className="flex items-center justify-end">
-        <button
-          type="button"
-          onClick={onLeaveLobby}
-          className="rounded-lg border border-rose-500/50 bg-rose-700/20 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-rose-100 transition hover:bg-rose-600/30"
-        >
-          Leave Lobby
-        </button>
-      </div>
       <FactionHealthCard factions={factions} />
-      <PlayerStatusCard player={selfPlayer} />
-      <TeamBurstCard faction={myFaction} />
     </section>
   );
 }
@@ -1810,6 +1780,7 @@ function SummaryView({
 }
 
 function ActionBar({
+  selfPlayer,
   attackState,
   burstState,
   burstActionType,
@@ -1818,6 +1789,7 @@ function ActionBar({
   onAttack,
   onBurst,
 }: {
+  selfPlayer: Snapshot["players"][number] | null;
   attackState: ActionEntry;
   burstState: ActionEntry;
   burstActionType: ActionType;
@@ -1828,29 +1800,47 @@ function ActionBar({
 }) {
   const attackDisabled = Boolean(attackBlockReason) || attackState.status === "sending";
   const burstDisabled = Boolean(burstBlockReason) || burstState.status === "sending";
-  const burstLabelBase = burstActionType === "burst_cancel" ? "Cancel" : "Burst";
+  const burstLabelBase = burstActionType === "burst_cancel" ? "CANCEL" : "BURST";
+  const attackLabel =
+    attackState.status === "sending"
+      ? "SENDING..."
+      : selfPlayer && selfPlayer.cooldownRemaining > 0
+        ? `ATTACK (${selfPlayer.cooldownRemaining}s)`
+        : "ATTACK";
+  const burstLabel = burstState.status === "sending" ? "SENDING..." : burstLabelBase;
+  const hpPercent = clampPercent(((selfPlayer?.hp ?? 0) / PLAYER_HP_MAX) * 100);
+  const xpPercent = getXpProgressPercent(selfPlayer);
+  const attackPercent = clampPercent(((selfPlayer?.attackPower ?? 0) / ATTACK_POWER_MAX) * 100);
+  const scoreLine = selfPlayer
+    ? `${selfPlayer.kills} / ${selfPlayer.deaths} / ${Math.round(selfPlayer.damageDealt)}`
+    : "0 / 0 / 0";
 
   return (
     <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-slate-700/80 bg-slate-950/95 px-3 py-2 backdrop-blur md:static md:mt-4 md:rounded-2xl md:border">
       <div className="mx-auto w-full max-w-6xl">
+        <div className="mb-2 space-y-1.5">
+          <CompactStatRow label="HP" percent={hpPercent} tone="rose" />
+          <CompactStatRow label="EXP" percent={xpPercent} tone="cyan" />
+          <CompactStatRow label="ATK" percent={attackPercent} tone="amber" />
+          <div className="flex items-center justify-between text-[11px] text-slate-300">
+            <p className="font-semibold tracking-wide">KILLS / DEATH / DAMAGE</p>
+            <p className="font-semibold text-slate-100">{scoreLine}</p>
+          </div>
+        </div>
+
         <div className="grid grid-cols-2 gap-2">
           <CombatActionPill
-            label={attackState.status === "sending" ? "Sending..." : "Attack"}
+            label={attackLabel}
             disabled={attackDisabled}
             tone="attack"
             onClick={onAttack}
           />
           <CombatActionPill
-            label={burstState.status === "sending" ? "Sending..." : burstLabelBase}
+            label={burstLabel}
             disabled={burstDisabled}
             tone="burst"
             onClick={onBurst}
           />
-        </div>
-
-        <div className="mt-1 grid grid-cols-2 gap-2 text-[11px] text-slate-400">
-          <p className="truncate">{attackBlockReason ?? statusMessage(attackState)}</p>
-          <p className="truncate">{burstBlockReason ?? statusMessage(burstState)}</p>
         </div>
       </div>
     </div>
@@ -1862,78 +1852,63 @@ function FactionHealthCard({
 }: {
   factions: Array<{ id: number; label: string; hp: number; aliveCount: number; playerCount: number; color: string }>;
 }) {
+  const redFaction =
+    factions.find((faction) => faction.id === 0) ??
+    ({ id: 0, label: "Red Faction", hp: 0, aliveCount: 0, playerCount: 0, color: "bg-rose-500" } as const);
+  const blueFaction =
+    factions.find((faction) => faction.id === 1) ??
+    ({ id: 1, label: "Blue Faction", hp: 0, aliveCount: 0, playerCount: 0, color: "bg-cyan-500" } as const);
+
   return (
     <div className="rounded-xl border border-slate-700/80 bg-slate-950/40 p-3">
-      <p className="mb-2 text-xs uppercase tracking-wide text-slate-400">Faction Health</p>
-      <div className="space-y-2">
-        {factions.map((faction) => (
-          <div key={faction.id} className="rounded-lg border border-slate-700/70 bg-slate-950/50 p-2.5">
-            <div className="mb-1 flex items-center justify-between text-sm">
-              <span>{faction.label}</span>
-              <span className="font-semibold">{Math.round(faction.hp)} HP</span>
-            </div>
-            <div className="h-2 w-full rounded-full bg-slate-800">
-              <div
-                className={`h-2 rounded-full ${faction.color}`}
-                style={{ width: `${Math.max(0, Math.min(100, faction.hp / 90))}%` }}
-              />
-            </div>
-            <p className="mt-1 text-xs text-slate-400">
-              {faction.aliveCount} alive / {faction.playerCount} total
-            </p>
-          </div>
-        ))}
+      <p className="mb-3 text-xs uppercase tracking-wide text-slate-400">Faction Health</p>
+      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)] md:items-center">
+        <FactionHealthLane faction={redFaction} align="left" />
+        <div className="min-h-44 rounded-xl border border-dashed border-slate-600/70 bg-slate-900/60" />
+        <FactionHealthLane faction={blueFaction} align="right" />
       </div>
     </div>
   );
 }
 
-function PlayerStatusCard({ player }: { player: Snapshot["players"][number] | null }) {
-  if (!player) {
-    return (
-      <div className="rounded-xl border border-slate-700/80 bg-slate-950/40 p-3">
-        <p className="text-xs uppercase tracking-wide text-slate-400">Player Status</p>
-        <p className="mt-2 text-sm text-slate-300">Waiting for player snapshot.</p>
-      </div>
-    );
-  }
+function FactionHealthLane({
+  faction,
+  align,
+}: {
+  faction: { id: number; label: string; hp: number; color: string };
+  align: "left" | "right";
+}) {
+  const alignmentClass = align === "right" ? "text-right" : "text-left";
+  const healthPercent = clampPercent((faction.hp / FACTION_HP_MAX) * 100);
 
   return (
-    <div className="rounded-xl border border-slate-700/80 bg-slate-950/40 p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-xs uppercase tracking-wide text-slate-400">Player Status</p>
-        <p className="truncate text-sm font-semibold text-slate-100">{player.name}</p>
-      </div>
-      <div className="space-y-1.5 text-sm">
-        <StatusLine label="State" value={player.isAlive ? "Alive" : "Eliminated"} />
-        <StatusLine label="Connection" value={player.connected ? "Connected" : "Disconnected"} />
-        <StatusLine label="HP" value={String(Math.round(player.hp))} />
-        <StatusLine label="Level / XP" value={`${player.level} / ${player.xp}`} />
-        <StatusLine label="ATK" value={String(player.attackPower)} />
-        <StatusLine label="Cooldown" value={`${player.cooldownRemaining}s`} />
-        <StatusLine label="Exposed" value={player.isExposed ? "Yes" : "No"} />
-        <StatusLine label="Kills / DMG" value={`${player.kills} / ${Math.round(player.damageDealt)}`} />
+    <div className={`space-y-1 ${alignmentClass}`}>
+      <p className="text-xs font-semibold uppercase tracking-wide text-slate-300">{faction.label}</p>
+      <div className="h-2 w-full rounded-full bg-slate-800">
+        <div className={`h-2 rounded-full ${faction.color}`} style={{ width: `${healthPercent}%` }} />
       </div>
     </div>
   );
 }
 
-function TeamBurstCard({ faction }: { faction: Snapshot["factions"][number] | null }) {
-  const commitLabel =
-    faction?.burstCommitCount === null || faction?.burstCommitCount === undefined
-      ? "Hidden"
-      : String(faction.burstCommitCount);
+function CompactStatRow({
+  label,
+  percent,
+  tone,
+}: {
+  label: string;
+  percent: number;
+  tone: "rose" | "cyan" | "amber";
+}) {
+  const toneClass =
+    tone === "rose" ? "bg-rose-500" : tone === "cyan" ? "bg-cyan-500" : "bg-amber-500";
 
   return (
-    <div className="rounded-xl border border-slate-700/80 bg-slate-950/40 p-3">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-xs uppercase tracking-wide text-slate-400">Team Burst</p>
-        <p className="text-xs font-semibold text-slate-200">{faction?.burstLocked ? "LOCKED" : "OPEN"}</p>
+    <div className="flex items-center gap-2 text-[11px]">
+      <p className="w-8 font-semibold tracking-wide text-slate-300">{label}</p>
+      <div className="h-1.5 flex-1 rounded-full bg-slate-800">
+        <div className={`h-1.5 rounded-full ${toneClass}`} style={{ width: `${clampPercent(percent)}%` }} />
       </div>
-      <p className="text-sm text-slate-200">
-        Committers: <span className="font-semibold">{commitLabel}</span>
-      </p>
-      <p className="mt-1 text-xs text-slate-400">Enemy commit counts remain hidden by server snapshot rules.</p>
     </div>
   );
 }
@@ -2073,19 +2048,10 @@ function CombatActionPill({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`min-h-10 w-full rounded-full border px-3 py-2 text-xs font-semibold uppercase tracking-wide transition ${toneClass} disabled:cursor-not-allowed disabled:opacity-50`}
+      className={`min-h-10 w-full rounded-full border px-3 py-2 text-xs font-semibold tracking-wide transition ${toneClass} disabled:cursor-not-allowed disabled:opacity-50`}
     >
       {label}
     </button>
-  );
-}
-
-function StatusLine({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex items-center justify-between border-b border-slate-800/80 pb-1 last:border-b-0 last:pb-0">
-      <p className="text-xs uppercase tracking-wide text-slate-400">{label}</p>
-      <p className="font-medium text-slate-100">{value}</p>
-    </div>
   );
 }
 
@@ -2459,6 +2425,30 @@ function generateRandomDisplayName(): string {
   const suffix = Math.floor(100 + Math.random() * 900);
 
   return `${adjective}${noun}${suffix}`;
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function getXpProgressPercent(player: Snapshot["players"][number] | null): number {
+  if (!player) {
+    return 0;
+  }
+
+  if (player.level >= XP_THRESHOLDS.length) {
+    return 100;
+  }
+
+  const currentLevelIndex = Math.max(0, Math.min(player.level - 1, XP_THRESHOLDS.length - 1));
+  const currentThreshold = XP_THRESHOLDS[currentLevelIndex] ?? 0;
+  const nextThreshold = XP_THRESHOLDS[currentLevelIndex + 1];
+  if (nextThreshold === undefined) {
+    return 100;
+  }
+
+  const progressSpan = Math.max(nextThreshold - currentThreshold, 1);
+  return clampPercent(((player.xp - currentThreshold) / progressSpan) * 100);
 }
 
 function getPhaseDurationSeconds(phase: string): number {
