@@ -40,7 +40,7 @@ export const LOBBY_REJOIN_COOLDOWN_SECONDS = 0;
 /** XP model from MVP (cumulative thresholds). */
 export const XP_THRESHOLDS = [0, 5, 12, 22, 35] as const;
 export const MANUAL_LANDED_XP = 5;
-export const KILL_XP = 2;
+export const KILL_XP = 10;
 
 /** Non-linear density curve parameters. */
 export const DENSITY_CAP = 3.5;

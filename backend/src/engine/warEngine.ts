@@ -264,7 +264,7 @@ export class WarEngine {
 
   /**
    * Queues a manual attack to resolve on next tick.
-   * Also applies immediate exposure window and starts cooldown.
+   * Also applies immediate exposure window and starts shared attack cooldown.
    */
   public queueManualAttack(playerId: string): ActionResult {
     if (!this.state.started || this.state.phase !== "combat" || this.state.ended) {
@@ -327,6 +327,9 @@ export class WarEngine {
     if (commit) {
       if (player.isCommittedToBurst) {
         return { ok: true, error: null };
+      }
+      if (player.cooldownRemaining > 0) {
+        return { ok: false, error: `Attack cooldown active for ${player.cooldownRemaining}s.` };
       }
       player.isCommittedToBurst = true;
       player.burstCommitTimestamp = this.state.tick;
@@ -477,7 +480,7 @@ export class WarEngine {
 
   /**
    * Materializes burst attacks at their scheduled execution tick.
-   * A burst contributes one attack per committed alive player.
+   * A burst contributes one attack per committed alive player with no active shared cooldown.
    */
   private collectBurstAttacksForCurrentTick(): ScheduledAttack[] {
     const attacks: ScheduledAttack[] = [];
@@ -490,8 +493,9 @@ export class WarEngine {
       const committedAlive = faction.players
         .map((playerId) => this.state.players[playerId])
         .filter((player): player is PlayerState => Boolean(player?.isAlive && player.isCommittedToBurst));
+      const committedReady = committedAlive.filter((player) => player.cooldownRemaining <= 0);
 
-      for (const player of committedAlive) {
+      for (const player of committedReady) {
         attacks.push({
           kind: "burst",
           attackerId: player.id,
@@ -500,18 +504,19 @@ export class WarEngine {
           resolveTick: this.state.tick,
           attackPower: player.attackPower,
         });
+        player.cooldownRemaining = ATTACK_COOLDOWN_SECONDS;
       }
 
       this.state.burstEvents.push({
         tick: this.state.tick,
         factionId: faction.id,
         stage: "executed",
-        committedAtStage: committedAlive.length,
+        committedAtStage: committedReady.length,
       });
 
       this.emitEvent(`burst_executed`, `Faction ${faction.id} burst executed`, {
         factionId: faction.id,
-        attackers: committedAlive.length,
+        attackers: committedReady.length,
       });
 
       this.clearFactionBurstCommitState(faction.id);
@@ -557,7 +562,7 @@ export class WarEngine {
 
       attacker.damageDealt += routing.damageToPlayers + routing.damageToFaction;
 
-      if (attack.kind === "manual" && routing.hitExposedPlayers && routing.damageToPlayers > 0) {
+      if (attack.kind === "manual" && routing.damageToPlayers + routing.damageToFaction > 0) {
         this.grantXp(attacker, MANUAL_LANDED_XP);
       }
 
@@ -744,7 +749,7 @@ export class WarEngine {
     }
   }
 
-  /** Decrements per-player manual attack cooldown timers. */
+  /** Decrements per-player shared attack cooldown timers. */
   private reduceCooldowns(): void {
     for (const player of Object.values(this.state.players)) {
       if (player.cooldownRemaining > 0) {

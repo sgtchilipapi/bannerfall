@@ -28,16 +28,6 @@ function createDeterministicActionScript(): ScriptedAction[] {
     { tickOffset: 2, description: "p4 manual", run: (engine) => engine.queueManualAttack("p4") },
     {
       tickOffset: 3,
-      description: "Faction 0 burst commit p1",
-      run: (engine) => engine.setBurstCommit("p1", true),
-    },
-    {
-      tickOffset: 3,
-      description: "Faction 0 burst commit p3",
-      run: (engine) => engine.setBurstCommit("p3", true),
-    },
-    {
-      tickOffset: 3,
       description: "Faction 0 burst commit p5",
       run: (engine) => engine.setBurstCommit("p5", true),
     },
@@ -52,14 +42,14 @@ function createDeterministicActionScript(): ScriptedAction[] {
       run: (engine) => engine.setBurstCommit("p9", true),
     },
     {
-      tickOffset: 4,
-      description: "Faction 1 burst commit p2",
-      run: (engine) => engine.setBurstCommit("p2", true),
+      tickOffset: 3,
+      description: "Faction 0 burst commit p11",
+      run: (engine) => engine.setBurstCommit("p11", true),
     },
     {
-      tickOffset: 4,
-      description: "Faction 1 burst commit p4",
-      run: (engine) => engine.setBurstCommit("p4", true),
+      tickOffset: 3,
+      description: "Faction 0 burst commit p13",
+      run: (engine) => engine.setBurstCommit("p13", true),
     },
     {
       tickOffset: 4,
@@ -77,14 +67,24 @@ function createDeterministicActionScript(): ScriptedAction[] {
       run: (engine) => engine.setBurstCommit("p10", true),
     },
     {
-      tickOffset: 6,
-      description: "p11 manual",
-      run: (engine) => engine.queueManualAttack("p11"),
+      tickOffset: 4,
+      description: "Faction 1 burst commit p12",
+      run: (engine) => engine.setBurstCommit("p12", true),
     },
     {
-      tickOffset: 8,
-      description: "p12 manual",
-      run: (engine) => engine.queueManualAttack("p12"),
+      tickOffset: 4,
+      description: "Faction 1 burst commit p14",
+      run: (engine) => engine.setBurstCommit("p14", true),
+    },
+    {
+      tickOffset: 9,
+      description: "p1 manual again",
+      run: (engine) => engine.queueManualAttack("p1"),
+    },
+    {
+      tickOffset: 10,
+      description: "p2 manual again",
+      run: (engine) => engine.queueManualAttack("p2"),
     },
   ];
 }

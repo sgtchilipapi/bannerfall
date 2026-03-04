@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { BURST_CANCEL_SECONDS, BURST_LOCK_RATIO } from "./constants.js";
+import { ATTACK_COOLDOWN_SECONDS, BURST_CANCEL_SECONDS, BURST_LOCK_RATIO } from "./constants.js";
 import { createEngineFixture, getPlayerFromSnapshot } from "../test-utils/engineFixture.js";
 
 function getFactionPlayerIds(engine: ReturnType<typeof createEngineFixture>, factionId: 0 | 1): string[] {
@@ -78,6 +78,17 @@ test("WarEngine burst: cancellation is rejected once burst is locked", () => {
   assert.equal(cancelAfterLock.error, "Burst already locked. Cancel is no longer allowed.");
 });
 
+test("WarEngine burst: commit is blocked while shared cooldown is active", () => {
+  const engine = createEngineFixture();
+
+  const attacked = engine.queueManualAttack("p1");
+  assert.equal(attacked.ok, true);
+
+  const blockedCommit = engine.setBurstCommit("p1", true);
+  assert.equal(blockedCommit.ok, false);
+  assert.equal(blockedCommit.error, `Attack cooldown active for ${ATTACK_COOLDOWN_SECONDS}s.`);
+});
+
 test("WarEngine burst: executes on the tick after lock and clears burst state", () => {
   const engine = createEngineFixture();
 
@@ -116,4 +127,53 @@ test("WarEngine burst: executes on the tick after lock and clears burst state", 
     const player = getPlayerFromSnapshot(engine, viewerId, id);
     assert.equal(player.isCommittedToBurst, false);
   }
+});
+
+test("WarEngine burst: execution applies shared cooldown to participating attackers", () => {
+  const engine = createEngineFixture();
+
+  const factionZero = getFactionPlayerIds(engine, 0);
+  const burstParticipants = factionZero.slice(0, 5);
+  for (const id of burstParticipants) {
+    assert.equal(engine.setBurstCommit(id, true).ok, true);
+  }
+
+  engine.tick();
+  engine.tick();
+
+  for (const id of burstParticipants) {
+    const player = getPlayerFromSnapshot(engine, id, id);
+    assert.equal(player.cooldownRemaining, ATTACK_COOLDOWN_SECONDS);
+  }
+});
+
+test("WarEngine burst: committed player cannot queue manual attack before burst execution", () => {
+  const engine = createEngineFixture();
+
+  const factionZero = getFactionPlayerIds(engine, 0);
+  const burstParticipants = factionZero.slice(0, 5);
+  const [manualAttackerId] = burstParticipants;
+  assert.ok(manualAttackerId);
+
+  for (const id of burstParticipants) {
+    assert.equal(engine.setBurstCommit(id, true).ok, true);
+  }
+  const manualWhileCommitted = engine.queueManualAttack(manualAttackerId);
+  assert.equal(manualWhileCommitted.ok, false);
+  assert.equal(manualWhileCommitted.error, "Committed players cannot manual attack.");
+
+  engine.tick();
+  const lockedAtTick = engine.getCurrentTick();
+  engine.tick();
+
+  const outcome = engine.getOutcomeSummary();
+  const burstEntries = outcome.damageLog.filter((entry) => entry.kind === "burst" && entry.tick === lockedAtTick + 1);
+  assert.equal(burstEntries.length, burstParticipants.length);
+  assert.equal(burstEntries.some((entry) => entry.attackerId === manualAttackerId), true);
+
+  const executeEvent = outcome.burstEvents.find(
+    (entry) => entry.factionId === 0 && entry.stage === "executed" && entry.tick === lockedAtTick + 1,
+  );
+  assert.ok(executeEvent);
+  assert.equal(executeEvent.committedAtStage, burstParticipants.length);
 });
